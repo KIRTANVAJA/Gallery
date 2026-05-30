@@ -81,30 +81,43 @@
   }
 
   .masonry-grid {
-    column-gap: 1rem;
+    column-count: 2;
+    column-gap: 0.5rem;
   }
 
-  @media (min-width: 640px) {
+  .masonry-item {
+    break-inside: avoid;
+    margin-bottom: 0.5rem;
+  }
+
+  @media (min-width: 768px) {
     .masonry-grid {
-      column-count: 2;
+      column-count: 3;
+      column-gap: 1rem;
+    }
+    .masonry-item {
+      margin-bottom: 1rem;
     }
   }
 
   @media (min-width: 1024px) {
     .masonry-grid {
-      column-count: 3;
-    }
-  }
-
-  @media (min-width: 1280px) {
-    .masonry-grid {
       column-count: 4;
+      column-gap: 1.25rem;
+    }
+    .masonry-item {
+      margin-bottom: 1.25rem;
     }
   }
 
-  .masonry-item {
-    break-inside: avoid;
-    margin-bottom: 1rem;
+  @media (min-width: 1536px) {
+    .masonry-grid {
+      column-count: 5;
+      column-gap: 1.5rem;
+    }
+    .masonry-item {
+      margin-bottom: 1.5rem;
+    }
   }
 }
 

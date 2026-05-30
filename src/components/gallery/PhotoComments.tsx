@@ -1,5 +1,5 @@
-import { motion } from 'framer-motion'
 import { FormEvent, useEffect, useState } from 'react'
+import { motion } from 'framer-motion'
 import { getLocalComments, addLocalComment, type LocalComment as Comment } from '../../utils/localDB'
 
 interface PhotoCommentsProps {

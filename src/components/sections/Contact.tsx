@@ -1,6 +1,7 @@
 import { motion } from 'framer-motion'
 import { FormEvent, useEffect, useState } from 'react'
-import { addLocalInquiry, getLocalSettings } from '../../utils/localDB'
+import { getLocalSettings } from '../../utils/localDB'
+import { subscribeSettings, dbAddInquiry } from '../../utils/firebase'
 
 
 const socialLinks = [
@@ -41,22 +42,21 @@ export function Contact() {
   const [settings, setSettings] = useState(() => getLocalSettings())
 
   useEffect(() => {
-    const handleUpdate = () => setSettings(getLocalSettings())
-    window.addEventListener('gallery_updated', handleUpdate)
-    window.addEventListener('storage', handleUpdate)
+    const unsubscribe = subscribeSettings((latestSettings) => {
+      setSettings(latestSettings)
+    })
     return () => {
-      window.removeEventListener('gallery_updated', handleUpdate)
-      window.removeEventListener('storage', handleUpdate)
+      if (unsubscribe) unsubscribe()
     }
   }, [])
 
-  const handleSubmit = (e: FormEvent<HTMLFormElement>) => {
+  const handleSubmit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault()
     setError('')
     const form = e.currentTarget
     const data = new FormData(form)
     try {
-      addLocalInquiry(
+      await dbAddInquiry(
         String(data.get('name')),
         String(data.get('email')),
         String(data.get('message')),

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { getLocalPhotos } from '../utils/localDB'
+import { subscribePhotos } from '../utils/firebase'
 import { SeoHead } from '../components/seo/SeoHead'
 import { Lightbox } from '../components/gallery/Lightbox'
 import type { Photo } from '../types/photo'
@@ -11,9 +11,13 @@ export function PhotoPage() {
 
   useEffect(() => {
     if (!slug) return
-    const all = getLocalPhotos()
-    const found = all.find((p) => p.slug === slug || p.id === slug)
-    setPhoto(found || null)
+    const unsubscribe = subscribePhotos((all) => {
+      const found = all.find((p) => p.slug === slug || p.id === slug)
+      setPhoto(found || null)
+    })
+    return () => {
+      if (unsubscribe) unsubscribe()
+    }
   }, [slug])
 
   if (!photo) {

@@ -1,18 +1,18 @@
 import { motion, useScroll, useTransform } from 'framer-motion'
 import { useEffect, useRef, useState } from 'react'
 import { getLocalSettings } from '../../utils/localDB'
+import { subscribeSettings } from '../../utils/firebase'
 
 export function Hero() {
   const ref = useRef<HTMLElement>(null)
   const [settings, setSettings] = useState(() => getLocalSettings())
 
   useEffect(() => {
-    const handleUpdate = () => setSettings(getLocalSettings())
-    window.addEventListener('gallery_updated', handleUpdate)
-    window.addEventListener('storage', handleUpdate)
+    const unsubscribe = subscribeSettings((latestSettings) => {
+      setSettings(latestSettings)
+    })
     return () => {
-      window.removeEventListener('gallery_updated', handleUpdate)
-      window.removeEventListener('storage', handleUpdate)
+      if (unsubscribe) unsubscribe()
     }
   }, [])
 

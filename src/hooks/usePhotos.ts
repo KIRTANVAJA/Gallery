@@ -1,42 +1,40 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { GalleryCategory, Photo } from '../types/photo'
-import { getDynamicPhotos } from '../utils/localDB'
+import galleryData from '../data/gallery.json'
 
 export function usePhotos(category: GalleryCategory = 'All') {
   const [photos, setPhotos] = useState<Photo[]>([])
   const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-
-  const load = useCallback(() => {
-    setLoading(true)
-    setError(null)
-    getDynamicPhotos()
-      .then((allPhotos) => {
-        if (category === 'All') {
-          setPhotos(allPhotos)
-        } else {
-          setPhotos(allPhotos.filter((p) => p.category === category))
-        }
-      })
-      .catch((err: any) => {
-        setError(err?.message || 'Gallery offline')
-      })
-      .finally(() => {
-        setLoading(false)
-      })
-  }, [category])
 
   useEffect(() => {
-    load()
-    const handleUpdate = () => load()
-    window.addEventListener('storage', handleUpdate)
-    window.addEventListener('gallery_updated', handleUpdate)
-    return () => {
-      window.removeEventListener('storage', handleUpdate)
-      window.removeEventListener('gallery_updated', handleUpdate)
-    }
-  }, [load])
+    setLoading(true)
+    const mapped: Photo[] = (galleryData as any[]).map((item) => ({
+      id: String(item.id),
+      title: item.title,
+      category: item.category,
+      src: item.image,
+      displayUrl: item.image,
+      previewUrl: item.image,
+      aspect: item.aspect || 'wide',
+      location: item.location || '',
+      camera: item.camera || '',
+      date: item.date || '',
+      featured: !!item.featured,
+      likes: Number(item.likes) || 0,
+      views: Number(item.views) || 0,
+      commentCount: Number(item.commentCount) || 0,
+      description: item.description || '',
+      alt: item.title,
+    }))
 
-  return { photos, loading, error, refetch: load }
+    if (category === 'All') {
+      setPhotos(mapped)
+    } else {
+      setPhotos(mapped.filter((p) => p.category === category))
+    }
+    setLoading(false)
+  }, [category, galleryData])
+
+  return { photos, loading, error: null, refetch: () => {} }
 }
 

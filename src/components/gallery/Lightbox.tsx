@@ -25,13 +25,16 @@ export function Lightbox({
   const [liked, setLiked] = useState(false)
   const [favorited, setFavorited] = useState(false)
   const [slideshow, setSlideshow] = useState(false)
-  const [showComments, setShowComments] = useState(false)
+  const [showDetails, setShowDetails] = useState(false)
+  const [direction, setDirection] = useState(0) // -1 for prev, 1 for next
 
   const goPrev = useCallback(() => {
+    setDirection(-1)
     onNavigate(currentIndex === 0 ? images.length - 1 : currentIndex - 1)
   }, [currentIndex, images.length, onNavigate])
 
   const goNext = useCallback(() => {
+    setDirection(1)
     onNavigate(currentIndex === images.length - 1 ? 0 : currentIndex + 1)
   }, [currentIndex, images.length, onNavigate])
 
@@ -48,9 +51,9 @@ export function Lightbox({
     const next = images[currentIndex + 1]
     const prev = images[currentIndex - 1]
     ;[next, prev].forEach((img) => {
-      if (img?.displayUrl) {
+      if (img?.displayUrl || img?.src) {
         const preload = new Image()
-        preload.src = img.displayUrl
+        preload.src = img.displayUrl || img.src
       }
     })
   }, [image, currentIndex, images])
@@ -85,7 +88,7 @@ export function Lightbox({
     setLikes(newLikes)
     setLiked(true)
     window.dispatchEvent(new Event('gallery_updated'))
-  }
+  };
 
   const handleFavorite = () => {
     if (!image) return
@@ -97,10 +100,28 @@ export function Lightbox({
 
   const displaySrc = image.displayUrl || image.previewUrl || image.src
 
+  const slideVariants = {
+    enter: (dir: number) => ({
+      x: dir > 0 ? '100vw' : dir < 0 ? '-100vw' : 0,
+      opacity: 0,
+      scale: 0.95
+    }),
+    center: {
+      x: 0,
+      opacity: 1,
+      scale: 1
+    },
+    exit: (dir: number) => ({
+      x: dir < 0 ? '100vw' : dir > 0 ? '-100vw' : 0,
+      opacity: 0,
+      scale: 0.95
+    })
+  }
+
   return (
     <AnimatePresence>
       <motion.div
-        className="fixed inset-0 z-[200] flex items-center justify-center"
+        className="fixed inset-0 z-[200] flex flex-col justify-between bg-black overflow-hidden select-none"
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
@@ -108,133 +129,236 @@ export function Lightbox({
         aria-modal="true"
         aria-label={`Image viewer: ${image.title}`}
       >
-        <motion.button
-          type="button"
-          className="absolute inset-0 bg-charcoal/95 backdrop-blur-2xl cursor-pointer"
-          onClick={onClose}
-          aria-label="Close viewer"
-        />
+        {/* Dynamic ambient backdrop glow */}
+        <div className="absolute inset-0 z-0 overflow-hidden pointer-events-none select-none">
+          <img
+            src={displaySrc}
+            alt=""
+            className="absolute inset-0 w-full h-full object-cover scale-110 opacity-20 filter blur-3xl saturate-150 contrast-125"
+          />
+          <div className="absolute inset-0 bg-black/60" />
+        </div>
 
-        <motion.div
-          className="relative z-10 flex max-h-[95vh] w-full max-w-6xl flex-col px-4 md:px-8 overflow-y-auto"
-          initial={{ scale: 0.9, opacity: 0, filter: 'blur(12px)' }}
-          animate={{ scale: 1, opacity: 1, filter: 'blur(0px)' }}
-          exit={{ scale: 0.95, opacity: 0 }}
-          transition={{ duration: 0.6, ease: [0.22, 1, 0.36, 1] }}
-        >
-          <AnimatePresence mode="wait">
-            <motion.div key={image.id} className="relative protected-image">
-              <motion.img
-                src={displaySrc}
-                alt={image.alt}
-                draggable={false}
-                onContextMenu={(e) => e.preventDefault()}
-                className="max-h-[60vh] w-full object-contain rounded-sm glow-gold select-none mx-auto"
-                initial={{ opacity: 0, scale: 1.05 }}
-                animate={{ opacity: 1, scale: 1 }}
-                exit={{ opacity: 0, scale: 0.98 }}
-                transition={{ duration: 0.5 }}
-              />
-              <ImageWatermark />
-            </motion.div>
-          </AnimatePresence>
-
-          <div className="mt-6 flex flex-wrap gap-3 justify-center md:justify-end">
+        {/* Top Header Bar */}
+        <div className="relative z-10 w-full px-4 md:px-8 py-4 bg-gradient-to-b from-black/80 to-transparent flex items-center justify-between">
+          <button
+            type="button"
+            onClick={onClose}
+            className="flex items-center gap-2 font-body text-[10px] tracking-widest uppercase text-cream-muted hover:text-gold transition-all"
+            aria-label="Close image viewer"
+          >
+            <span>← Close</span>
+          </button>
+          
+          <span className="font-body text-xs tracking-widest text-cream-muted hidden sm:inline-block">
+            {currentIndex + 1} / {images.length} {slideshow && '• Autoplay'}
+          </span>
+          
+          <div className="flex items-center gap-3">
             <button
               type="button"
               onClick={() => setSlideshow((s) => !s)}
-              className="font-body text-[10px] tracking-widest uppercase border border-white/10 px-4 py-2 text-cream-muted hover:text-gold hover:border-gold/30"
+              className={`font-body text-[10px] tracking-widest uppercase border px-3 py-1.5 transition-all ${
+                slideshow
+                  ? 'border-gold text-gold bg-gold/5'
+                  : 'border-white/10 text-cream-muted hover:text-gold hover:border-gold/30'
+              }`}
             >
               {slideshow ? 'Pause' : 'Slideshow'}
             </button>
             <button
               type="button"
               onClick={handleFavorite}
-              className={`font-body text-[10px] tracking-widest uppercase border px-4 py-2 ${
-                favorited ? 'border-gold text-gold' : 'border-white/10 text-cream-muted'
+              className={`font-body text-[10px] tracking-widest uppercase border px-3 py-1.5 transition-all ${
+                favorited ? 'border-gold text-gold bg-gold/5' : 'border-white/10 text-cream-muted hover:text-gold hover:border-gold/30'
               }`}
             >
               {favorited ? 'Saved' : 'Save'}
             </button>
-            <button
-              type="button"
-              onClick={() => setShowComments((s) => !s)}
-              className="font-body text-[10px] tracking-widest uppercase border border-white/10 px-4 py-2 text-cream-muted hover:text-gold"
-            >
-              Comments ({image.commentCount || 0})
-            </button>
           </div>
+        </div>
 
-          <div className="mt-6 flex flex-col md:flex-row md:items-start md:justify-between gap-6">
-            <div>
-              <h3 className="font-heading text-2xl md:text-3xl text-cream">{image.title}</h3>
-              {image.mood && (
-                <span className="inline-block mt-2 font-body text-[10px] tracking-widest uppercase text-gold/70">
-                  {image.mood}
-                </span>
-              )}
-              <div className="mt-4 flex flex-wrap gap-4 font-body text-xs tracking-wider text-cream-muted uppercase">
-                {image.location && <span>{image.location}</span>}
-                {image.camera && (
-                  <>
-                    <span className="text-gold/40">·</span>
-                    <span>{image.camera}</span>
-                  </>
-                )}
-                {image.date && (
-                  <>
-                    <span className="text-gold/40">·</span>
-                    <span>{image.date}</span>
-                  </>
-                )}
+        {/* Main Viewport Container */}
+        <div className="relative flex-1 flex items-center justify-center w-full max-w-6xl mx-auto px-4">
+          <AnimatePresence mode="wait" initial={false} custom={direction}>
+            <motion.div
+              key={image.id}
+              custom={direction}
+              variants={slideVariants}
+              initial="enter"
+              animate="center"
+              exit="exit"
+              transition={{
+                x: { type: 'spring', stiffness: 300, damping: 30 },
+                opacity: { duration: 0.3 }
+              }}
+              drag="x"
+              dragConstraints={{ left: 0, right: 0 }}
+              dragElastic={0.6}
+              onDragEnd={(_, info) => {
+                const swipeThreshold = 50
+                const swipeVelocity = 500
+                if (info.offset.x < -swipeThreshold || info.velocity.x < -swipeVelocity) {
+                  goNext()
+                } else if (info.offset.x > swipeThreshold || info.velocity.x > swipeVelocity) {
+                  goPrev()
+                }
+              }}
+              className="relative w-full flex flex-col items-center justify-center cursor-grab active:cursor-grabbing touch-pan-y z-10 py-4"
+            >
+              <div className="relative max-h-[60vh] md:max-h-[70vh] max-w-full px-4 flex items-center justify-center select-none pointer-events-none">
+                <img
+                  src={displaySrc}
+                  alt={image.alt}
+                  draggable={false}
+                  className="max-h-[60vh] md:max-h-[70vh] w-auto max-w-full object-contain rounded-sm glow-gold shadow-2xl"
+                />
+                <ImageWatermark />
               </div>
-              {image.aiTags && image.aiTags.length > 0 && (
-                <div className="flex flex-wrap gap-2 mt-4">
-                  {image.aiTags.slice(0, 6).map((tag) => (
-                    <span
-                      key={tag}
-                      className="font-body text-[10px] px-2 py-1 border border-white/10 text-cream-muted"
-                    >
-                      {tag}
-                    </span>
-                  ))}
-                </div>
-              )}
-              <p className="mt-3 font-body text-xs text-cream-muted">
-                {image.views + 1} views · {likes} likes
-              </p>
-              <ExifPanel exif={image.exif} camera={image.camera} lens={image.lens} />
-            </div>
+            </motion.div>
+          </AnimatePresence>
 
+          {/* Navigation Arrows (Hidden on mobile) */}
+          <button
+            type="button"
+            onClick={goPrev}
+            className="hidden md:flex cursor-hover absolute left-6 top-1/2 z-20 -translate-y-1/2 h-12 w-12 items-center justify-center rounded-full border border-white/10 bg-black/40 text-cream backdrop-blur-md hover:border-gold/60 hover:text-gold transition-all"
+            aria-label="Previous image"
+          >
+            ‹
+          </button>
+          <button
+            type="button"
+            onClick={goNext}
+            className="hidden md:flex cursor-hover absolute right-6 top-1/2 z-20 -translate-y-1/2 h-12 w-12 items-center justify-center rounded-full border border-white/10 bg-black/40 text-cream backdrop-blur-md hover:border-gold/60 hover:text-gold transition-all"
+            aria-label="Next image"
+          >
+            ›
+          </button>
+        </div>
+
+        {/* Minimal Bottom Bar */}
+        <div className="relative z-10 w-full px-4 md:px-8 py-5 bg-gradient-to-t from-black/80 to-transparent flex items-center justify-between gap-4">
+          <div className="text-left max-w-[55%]">
+            <h3 className="font-heading text-base md:text-lg text-cream truncate">{image.title}</h3>
+            <p className="font-body text-[10px] md:text-xs tracking-wider text-cream-muted truncate mt-0.5">{image.location}</p>
+          </div>
+          
+          <div className="flex items-center gap-3">
             <button
               type="button"
               onClick={handleLike}
               disabled={liked}
-              className="cursor-hover self-start font-body text-xs tracking-[0.2em] uppercase border border-gold/30 px-6 py-3 text-gold hover:bg-gold/10 disabled:opacity-50"
+              className={`flex items-center justify-center gap-2 font-body text-[10px] tracking-widest uppercase border px-4 py-2 transition-all ${
+                liked
+                  ? 'border-gold text-gold bg-gold/10'
+                  : 'border-white/10 text-cream-muted hover:text-gold hover:border-gold/30'
+              }`}
             >
-              {liked ? 'Appreciated' : 'Appreciate'}
+              <span>{liked ? 'Liked' : 'Like'}</span>
+              <span className="opacity-80">({likes})</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowDetails(true)}
+              className="font-body text-[10px] tracking-widest uppercase border border-white/10 px-4 py-2 text-cream-muted hover:text-gold hover:border-gold/30 transition-all"
+            >
+              Details
             </button>
           </div>
+        </div>
 
-          {showComments && <PhotoComments photoId={image.id} />}
-        </motion.div>
+        {/* Collapsible Slide-up Details Drawer */}
+        <AnimatePresence>
+          {showDetails && (
+            <>
+              {/* Drawer Backdrop overlay */}
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 0.6 }}
+                exit={{ opacity: 0 }}
+                className="fixed inset-0 bg-black/80 z-[210] backdrop-blur-sm"
+                onClick={() => setShowDetails(false)}
+              />
+              
+              {/* Slide-up panel */}
+              <motion.div
+                initial={{ y: '100%' }}
+                animate={{ y: 0 }}
+                exit={{ y: '100%' }}
+                transition={{ type: 'spring', damping: 25, stiffness: 220 }}
+                className="fixed bottom-0 left-0 right-0 max-h-[80vh] md:max-h-[70vh] bg-charcoal/95 border-t border-white/10 rounded-t-2xl z-[220] overflow-y-auto"
+              >
+                <div className="sticky top-0 bg-charcoal-mid/90 backdrop-blur-md px-6 py-4 border-b border-white/5 flex items-center justify-between z-10">
+                  <div className="text-left">
+                    <h3 className="font-heading text-lg md:text-xl text-cream">{image.title}</h3>
+                    <p className="font-body text-xs text-cream-muted mt-0.5">{image.location}</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowDetails(false)}
+                    className="h-8 w-8 rounded-full border border-white/10 flex items-center justify-center text-cream hover:border-gold hover:text-gold transition-all text-xl"
+                    aria-label="Close details"
+                  >
+                    ×
+                  </button>
+                </div>
 
-        <button
-          type="button"
-          onClick={onClose}
-          className="cursor-hover absolute top-6 right-6 z-20 flex h-12 w-12 items-center justify-center rounded-full border border-white/10 text-cream hover:border-gold/50 hover:text-gold"
-          aria-label="Close"
-        >
-          ×
-        </button>
+                <div className="p-6 md:p-8 grid grid-cols-1 md:grid-cols-2 gap-8 text-left">
+                  <div>
+                    {/* Story / Description */}
+                    {image.description && (
+                      <div className="mb-6">
+                        <h4 className="font-heading text-xs tracking-widest uppercase text-gold/80 mb-2">The Story</h4>
+                        <p className="font-body text-sm text-cream-muted leading-relaxed">{image.description}</p>
+                      </div>
+                    )}
 
-        <button type="button" onClick={goPrev} className="cursor-hover absolute left-4 top-1/2 z-20 -translate-y-1/2 h-12 w-12 rounded-full border border-white/10 text-cream hover:border-gold/50" aria-label="Previous">‹</button>
-        <button type="button" onClick={goNext} className="cursor-hover absolute right-4 top-1/2 z-20 -translate-y-1/2 h-12 w-12 rounded-full border border-white/10 text-cream hover:border-gold/50" aria-label="Next">›</button>
+                    {/* Stats */}
+                    <div className="mb-6 flex flex-wrap gap-4 font-body text-xs text-cream-muted uppercase tracking-wider">
+                      <span>{image.category}</span>
+                      <span className="text-gold/40">·</span>
+                      <span>{image.date}</span>
+                      <span className="text-gold/40">·</span>
+                      <span>{likes} likes</span>
+                      <span className="text-gold/40">·</span>
+                      <span>{image.views + 1} views</span>
+                    </div>
 
-        <p className="absolute bottom-6 left-1/2 -translate-x-1/2 font-body text-xs tracking-widest text-cream-muted">
-          {currentIndex + 1} / {images.length}
-          {slideshow && ' · autoplay'}
-        </p>
+                    {/* AI Tags */}
+                    {image.aiTags && image.aiTags.length > 0 && (
+                      <div className="mb-6">
+                        <h4 className="font-heading text-xs tracking-widest uppercase text-gold/80 mb-2">Keywords</h4>
+                        <div className="flex flex-wrap gap-2">
+                          {image.aiTags.map((tag) => (
+                            <span
+                              key={tag}
+                              className="font-body text-[10px] px-2.5 py-1 border border-white/5 bg-white/5 text-cream-muted rounded-sm"
+                            >
+                              {tag}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* EXIF Data */}
+                    <div>
+                      <h4 className="font-heading text-xs tracking-widest uppercase text-gold/80 mb-3">Camera & Settings</h4>
+                      <ExifPanel exif={image.exif} camera={image.camera} lens={image.lens} />
+                    </div>
+                  </div>
+
+                  {/* Comments Section */}
+                  <div className="border-t md:border-t-0 md:border-l border-white/10 pt-6 md:pt-0 md:pl-8">
+                    <h4 className="font-heading text-xs tracking-widest uppercase text-gold/80 mb-4">Guestbook Comments</h4>
+                    <PhotoComments photoId={image.id} />
+                  </div>
+                </div>
+              </motion.div>
+            </>
+          )}
+        </AnimatePresence>
       </motion.div>
     </AnimatePresence>
   )

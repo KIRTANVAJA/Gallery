@@ -2,19 +2,17 @@ import React, { useEffect, useState } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
-  getLocalPhotos,
   saveLocalPhotos,
   getLocalSettings,
-  saveLocalSettings,
-  getLocalInquiries,
-  getCloudinaryConfig,
-  saveCloudinaryConfig,
-  serializeMetadata,
-  generateCloudinarySignature,
-  getDynamicPhotos,
   type LocalInquiry,
-  type CloudinaryConfig,
 } from '../utils/localDB'
+import {
+  subscribePhotos,
+  subscribeSettings,
+  subscribeInquiries,
+  dbSaveSettings,
+  dbDeleteInquiry,
+} from '../utils/firebase'
 import type { Photo, PhotoCategory } from '../types/photo'
 import { SiteSettings } from '../data/settings'
 
@@ -28,15 +26,6 @@ export function AdminDashboardPage() {
   const [jsonText, setJsonText] = useState('')
   const [jsonError, setJsonError] = useState<string | null>(null)
   const [successMessage, setSuccessMessage] = useState<string | null>(null)
-  const [isRefreshing, setIsRefreshing] = useState(false)
-
-  // Cloudinary credentials state
-  const [cloudinaryConfig, setCloudinaryConfig] = useState<CloudinaryConfig>({
-    cloudName: '',
-    uploadPreset: '',
-    apiKey: '',
-    apiSecret: '',
-  })
 
   // Selected file for upload
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
@@ -46,7 +35,7 @@ export function AdminDashboardPage() {
   // Photo form state
   const [newPhoto, setNewPhoto] = useState({
     title: '',
-    src: '', // Used for manual URL fallback
+    src: '',
     category: 'Cinematic' as PhotoCategory,
     location: '',
     camera: '',
@@ -89,33 +78,30 @@ export function AdminDashboardPage() {
   })
 
   useEffect(() => {
-    // Load local storage values
+    // 1. Initial local fallbacks
     const allSettings = getLocalSettings()
-    const allInquiries = getLocalInquiries()
-    const cConfig = getCloudinaryConfig()
-
-    setInquiries(allInquiries)
     setSettingsForm(allSettings)
 
-    if (cConfig) {
-      setCloudinaryConfig(cConfig)
-    }
+    // 2. Register real-time local HMR/database listeners
+    const unsubPhotos = subscribePhotos((latestPhotos) => {
+      setPhotos(latestPhotos)
+      setJsonText(JSON.stringify(latestPhotos, null, 2))
+    })
 
-    refreshPhotos()
+    const unsubSettings = subscribeSettings((latestSettings) => {
+      setSettingsForm(latestSettings)
+    })
+
+    const unsubInquiries = subscribeInquiries((latestInquiries) => {
+      setInquiries(latestInquiries)
+    })
+
+    return () => {
+      if (unsubPhotos) unsubPhotos()
+      if (unsubSettings) unsubSettings()
+      if (unsubInquiries) unsubInquiries()
+    }
   }, [])
-
-  const refreshPhotos = async () => {
-    setIsRefreshing(true)
-    try {
-      const allPhotos = await getDynamicPhotos()
-      setPhotos(allPhotos)
-      setJsonText(JSON.stringify(allPhotos, null, 2))
-    } catch (e) {
-      console.error('[Dashboard] Failed to refresh photos:', e)
-    } finally {
-      setIsRefreshing(false)
-    }
-  }
 
   const triggerNotification = (msg: string) => {
     setSuccessMessage(msg)
@@ -128,212 +114,121 @@ export function AdminDashboardPage() {
     navigate('/')
   }
 
-  // --- ADD / UPLOAD PHOTO ---
+  // --- ADD / UPLOAD PHOTO (LOCAL CMS) ---
   const handleAddPhoto = async (e: React.FormEvent) => {
     e.preventDefault()
 
-    const hasCloud = cloudinaryConfig.cloudName && cloudinaryConfig.uploadPreset
-
-    if (hasCloud) {
-      if (!selectedFile) {
-        alert('Please select an image file to upload.')
-        return
-      }
-      if (!newPhoto.title) {
-        alert('Please enter a photograph title.')
-        return
-      }
-
-      setUploadStatus('uploading')
-      setUploadError(null)
-
-      try {
-        // 1. Serialize metadata to a base64 string
-        const base64Metadata = serializeMetadata({
-          title: newPhoto.title,
-          category: newPhoto.category,
-          camera: newPhoto.camera,
-          location: newPhoto.location,
-          date: newPhoto.date || new Date().toLocaleDateString('en-US', { month: 'long', year: 'numeric' }),
-          aspect: newPhoto.aspect,
-          featured: newPhoto.featured,
-          description: newPhoto.description,
-        })
-
-        // 2. Set Public ID to: cis_gallery/[base64_metadata]
-        const publicId = `cis_gallery/${base64Metadata}`
-
-        // 3. Assemble FormData for Cloudinary Unsigned Upload
-        const formData = new FormData()
-        formData.append('file', selectedFile)
-        formData.append('upload_preset', cloudinaryConfig.uploadPreset)
-        formData.append('public_id', publicId)
-        formData.append('tags', 'cis_gallery')
-
-        const uploadUrl = `https://api.cloudinary.com/v1_1/${cloudinaryConfig.cloudName}/image/upload`
-
-        console.log('[Cloudinary Upload] Initiating request to:', uploadUrl)
-        const response = await fetch(uploadUrl, {
-          method: 'POST',
-          body: formData,
-        })
-
-        if (!response.ok) {
-          const errData = await response.json()
-          throw new Error(errData.error?.message || `Cloudinary response error: ${response.status}`)
-        }
-
-        const data = await response.json()
-        console.log('[Cloudinary Upload] Success!', data)
-
-        setUploadStatus('success')
-        setSelectedFile(null)
-        
-        // Reset form
-        setNewPhoto({
-          title: '',
-          src: '',
-          category: 'Cinematic',
-          location: '',
-          camera: '',
-          lens: '',
-          date: '',
-          aspect: 'wide',
-          featured: false,
-          alt: '',
-          description: '',
-        })
-
-        // Clear the file input element manually
-        const fileInput = document.getElementById('photo-file-input') as HTMLInputElement
-        if (fileInput) fileInput.value = ''
-
-        triggerNotification('Photograph uploaded successfully to Cloudinary CDN.')
-        window.dispatchEvent(new Event('gallery_updated'))
-        await refreshPhotos()
-      } catch (err: any) {
-        console.error('[Cloudinary Upload Error]', err)
-        setUploadStatus('error')
-        setUploadError(err.message || 'Direct upload request failed.')
-      }
-    } else {
-      // Offline mode fallback (requires manual image URL)
-      if (!newPhoto.title || !newPhoto.src) {
-        alert('Title and Image URL are required in offline fallback mode.')
-        return
-      }
-
-      const created: Photo = {
-        id: 'local_' + Math.random().toString(36).substring(2, 9),
-        slug: newPhoto.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, ''),
-        title: newPhoto.title,
-        src: newPhoto.src,
-        displayUrl: newPhoto.src,
-        category: newPhoto.category,
-        location: newPhoto.location,
-        camera: newPhoto.camera,
-        lens: newPhoto.lens,
-        date: newPhoto.date || new Date().toLocaleDateString('en-US', { month: 'long', year: 'numeric' }),
-        aspect: newPhoto.aspect,
-        featured: newPhoto.featured,
-        alt: newPhoto.alt || newPhoto.title,
-        description: newPhoto.description,
-        likes: 0,
-        views: 0,
-      }
-
-      const updated = [created, ...photos]
-      setPhotos(updated)
-      saveLocalPhotos(updated)
-      setJsonText(JSON.stringify(updated, null, 2))
-
-      setNewPhoto({
-        title: '',
-        src: '',
-        category: 'Cinematic',
-        location: '',
-        camera: '',
-        lens: '',
-        date: '',
-        aspect: 'wide',
-        featured: false,
-        alt: '',
-        description: '',
-      })
-
-      window.dispatchEvent(new Event('gallery_updated'))
-      triggerNotification('Photograph committed to local storage cache.')
-    }
-  }
-
-  // --- DELETE PHOTO ---
-  const handleDeletePhoto = async (photo: Photo) => {
-    const isCloudinaryPhoto = photo.id.startsWith('cis_gallery/')
-    const hasCloudCredentials = cloudinaryConfig.cloudName && cloudinaryConfig.apiKey && cloudinaryConfig.apiSecret
-
-    if (isCloudinaryPhoto && !hasCloudCredentials) {
-      alert('To delete images from Cloudinary, you must configure API Key and API Secret under Settings.')
+    if (!import.meta.env.DEV) {
+      alert('Read-Only Mode: Image upload is disabled on the live site. Please run the project locally to upload files.')
       return
     }
 
-    if (!window.confirm(`Delete "${photo.title}" permanently?`)) return
+    if (!selectedFile) {
+      alert('Please select an image file to upload.')
+      return
+    }
+    if (!newPhoto.title) {
+      alert('Please enter a photograph title.')
+      return
+    }
 
-    if (isCloudinaryPhoto && hasCloudCredentials) {
-      triggerNotification('Sending destroy request to Cloudinary...')
-      try {
-        const timestamp = Math.round(Date.now() / 1000).toString()
-        const params = {
-          public_id: photo.id,
-          timestamp: timestamp,
+    setUploadStatus('uploading')
+    setUploadError(null)
+
+    try {
+      const reader = new FileReader()
+      reader.readAsDataURL(selectedFile)
+      reader.onload = async () => {
+        try {
+          const fileData = reader.result as string
+          const response = await fetch('/api/local-upload', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              title: newPhoto.title,
+              category: newPhoto.category,
+              filename: selectedFile.name,
+              fileData,
+              aspect: newPhoto.aspect,
+              location: newPhoto.location,
+              camera: newPhoto.camera,
+              date: newPhoto.date,
+              description: newPhoto.description
+            })
+          })
+
+          if (!response.ok) {
+            const errData = await response.json()
+            throw new Error(errData.error || 'Upload failed')
+          }
+
+          setUploadStatus('success')
+          setSelectedFile(null)
+
+          // Reset Form
+          setNewPhoto({
+            title: '',
+            src: '',
+            category: 'Cinematic',
+            location: '',
+            camera: '',
+            lens: '',
+            date: '',
+            aspect: 'wide',
+            featured: false,
+            alt: '',
+            description: '',
+          })
+
+          const fileInput = document.getElementById('photo-file-input') as HTMLInputElement
+          if (fileInput) fileInput.value = ''
+
+          triggerNotification('Photograph uploaded and saved locally.')
+          window.dispatchEvent(new Event('gallery_updated'))
+        } catch (err: any) {
+          console.error('[Upload Error]', err)
+          setUploadStatus('error')
+          setUploadError(err.message || 'Local upload failed.')
         }
-
-        // Generate SHA-1 signature using native web crypto
-        const signature = await generateCloudinarySignature(params, cloudinaryConfig.apiSecret)
-
-        const formData = new FormData()
-        formData.append('public_id', photo.id)
-        formData.append('timestamp', timestamp)
-        formData.append('api_key', cloudinaryConfig.apiKey)
-        formData.append('signature', signature)
-
-        const deleteUrl = `https://api.cloudinary.com/v1_1/${cloudinaryConfig.cloudName}/image/destroy`
-
-        console.log('[Cloudinary Delete] Initiating request to:', deleteUrl)
-        const response = await fetch(deleteUrl, {
-          method: 'POST',
-          body: formData,
-        })
-
-        if (!response.ok) {
-          const errData = await response.json()
-          throw new Error(errData.error?.message || 'Cloudinary deletion request failed.')
-        }
-
-        const resData = await response.json()
-        console.log('[Cloudinary Delete] Response:', resData)
-
-        if (resData.result === 'not found') {
-          console.warn('[Cloudinary Delete] Resource not found on server, clearing locally.')
-        }
-
-        // Clean up view count states from local cache
-        const localCached = getLocalPhotos().filter((p) => p.id !== photo.id)
-        saveLocalPhotos(localCached)
-
-        triggerNotification('Photograph removed from Cloudinary server.')
-        window.dispatchEvent(new Event('gallery_updated'))
-        await refreshPhotos()
-      } catch (err: any) {
-        alert(`Cloudinary Deletion Failed: ${err.message}`)
       }
-    } else {
-      // Local fallback removal
-      const updated = photos.filter((p) => p.id !== photo.id)
-      setPhotos(updated)
-      saveLocalPhotos(updated)
-      setJsonText(JSON.stringify(updated, null, 2))
+      reader.onerror = () => {
+        throw new Error('File reading failed')
+      }
+    } catch (err: any) {
+      console.error('[Upload Error]', err)
+      setUploadStatus('error')
+      setUploadError(err.message || 'Direct upload request failed.')
+    }
+  }
+
+  // --- DELETE PHOTO (LOCAL CMS) ---
+  const handleDeletePhoto = async (photo: Photo) => {
+    if (!import.meta.env.DEV) {
+      alert('Read-Only Mode: Deleting photos is disabled on the live site. Please run the project locally.')
+      return
+    }
+    if (!confirm(`Are you sure you want to delete "${photo.title}"?`)) return
+
+    try {
+      const response = await fetch('/api/local-delete', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ id: photo.id })
+      })
+
+      if (!response.ok) {
+        const errData = await response.json()
+        throw new Error(errData.error || 'Delete failed')
+      }
+
+      triggerNotification('Photograph deleted locally.')
       window.dispatchEvent(new Event('gallery_updated'))
-      triggerNotification('Photograph cleared from local storage cache.')
+    } catch (err: any) {
+      alert(`Deletion Failed: ${err.message}`)
     }
   }
 
@@ -356,105 +251,24 @@ export function AdminDashboardPage() {
     })
   }
 
-  // --- SAVE EDIT (RENAME IN CLOUDINARY OR UPDATE LOCAL) ---
+  // --- SAVE EDIT (LOCAL CMS) ---
   const handleSaveEdit = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!editForm) return
-
-    const isCloudinaryPhoto = editForm.id.startsWith('cis_gallery/')
-    const hasCloudCredentials = cloudinaryConfig.cloudName && cloudinaryConfig.apiKey && cloudinaryConfig.apiSecret
-
-    if (isCloudinaryPhoto && !hasCloudCredentials) {
-      alert('To modify Cloudinary metadata, you must enter your Cloudinary API Key and API Secret in the Settings tab.')
+    if (!import.meta.env.DEV) {
+      alert('Read-Only Mode: Editing photo details is disabled on the live site. Please run the project locally.')
       return
     }
+    if (!editForm) return
 
-    if (isCloudinaryPhoto && hasCloudCredentials) {
-      triggerNotification('Synchronizing updates with Cloudinary CDN...')
-      try {
-        const newBase64 = serializeMetadata({
-          title: editForm.title,
-          category: editForm.category,
-          camera: editForm.camera,
-          location: editForm.location,
-          date: editForm.date,
-          aspect: editForm.aspect,
-          featured: editForm.featured,
-          description: editForm.description,
-        })
-
-        const newPublicId = `cis_gallery/${newBase64}`
-
-        if (editForm.id === newPublicId) {
-          // No changes made to metadata
-          setEditingPhotoId(null)
-          setEditForm(null)
-          return
-        }
-
-        const timestamp = Math.round(Date.now() / 1000).toString()
-        const params = {
-          from_public_id: editForm.id,
-          timestamp: timestamp,
-          to_public_id: newPublicId,
-        }
-
-        const signature = await generateCloudinarySignature(params, cloudinaryConfig.apiSecret)
-
-        const formData = new FormData()
-        formData.append('from_public_id', editForm.id)
-        formData.append('to_public_id', newPublicId)
-        formData.append('timestamp', timestamp)
-        formData.append('api_key', cloudinaryConfig.apiKey)
-        formData.append('signature', signature)
-
-        const renameUrl = `https://api.cloudinary.com/v1_1/${cloudinaryConfig.cloudName}/image/rename`
-        console.log('[Cloudinary Rename] Initiating request to:', renameUrl)
-
-        const response = await fetch(renameUrl, {
-          method: 'POST',
-          body: formData,
-        })
-
-        if (!response.ok) {
-          const errData = await response.json()
-          throw new Error(errData.error?.message || 'Renaming request rejected.')
-        }
-
-        // Migrate local metadata for view counters
-        const local = getLocalPhotos()
-        const matchIdx = local.findIndex((p) => p.id === editForm.id)
-        if (matchIdx !== -1) {
-          const target = local[matchIdx]
-          local[matchIdx] = {
-            ...target,
-            id: newPublicId,
-            title: editForm.title,
-            category: editForm.category,
-            location: editForm.location,
-            camera: editForm.camera,
-            date: editForm.date,
-            aspect: editForm.aspect,
-            featured: editForm.featured,
-            description: editForm.description,
-          }
-          saveLocalPhotos(local)
-        }
-
-        setEditingPhotoId(null)
-        setEditForm(null)
-        triggerNotification('Cloudinary metadata updated.')
-        window.dispatchEvent(new Event('gallery_updated'))
-        await refreshPhotos()
-      } catch (err: any) {
-        alert(`Cloudinary Edit Failed: ${err.message}`)
-      }
-    } else {
-      // Local fallback edit
-      const updated = photos.map((p) => {
-        if (p.id === editForm.id) {
-          return {
-            ...p,
+    try {
+      const response = await fetch('/api/local-update', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          id: editForm.id,
+          fields: {
             title: editForm.title,
             category: editForm.category,
             location: editForm.location,
@@ -466,35 +280,73 @@ export function AdminDashboardPage() {
             alt: editForm.alt || editForm.title,
             description: editForm.description,
           }
-        }
-        return p
+        })
       })
-      setPhotos(updated)
-      saveLocalPhotos(updated)
-      setJsonText(JSON.stringify(updated, null, 2))
+
+      if (!response.ok) {
+        const errData = await response.json()
+        throw new Error(errData.error || 'Update failed')
+      }
+
       setEditingPhotoId(null)
       setEditForm(null)
+      triggerNotification('Photograph details updated locally.')
       window.dispatchEvent(new Event('gallery_updated'))
-      triggerNotification('Local photograph cache updated.')
+    } catch (err: any) {
+      alert(`Edit Failed: ${err.message}`)
     }
   }
 
-  // --- SAVE SYSTEM SETTINGS AND CLOUDINARY CONFIG ---
+  // --- REORDER PHOTOS (LOCAL CMS) ---
+  const handleMovePhoto = async (index: number, direction: 'up' | 'down') => {
+    if (!import.meta.env.DEV) {
+      alert('Read-Only Mode: Reordering photos is disabled on the live site. Please run the project locally.')
+      return
+    }
+    const newIndex = direction === 'up' ? index - 1 : index + 1
+    if (newIndex < 0 || newIndex >= photos.length) return
+
+    const updatedPhotos = [...photos]
+    const [movedPhoto] = updatedPhotos.splice(index, 1)
+    updatedPhotos.splice(newIndex, 0, movedPhoto)
+
+    setPhotos(updatedPhotos)
+
+    try {
+      const response = await fetch('/api/local-reorder', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          reorderedList: updatedPhotos.map(p => p.id)
+        })
+      })
+
+      if (!response.ok) {
+        const errData = await response.json()
+        throw new Error(errData.error || 'Reordering failed')
+      }
+
+      triggerNotification('Gallery order updated.')
+      window.dispatchEvent(new Event('gallery_updated'))
+    } catch (err: any) {
+      alert(`Reordering Failed: ${err.message}`)
+    }
+  }
+
+  // --- SAVE SYSTEM SETTINGS ---
   const handleSaveSettings = (e: React.FormEvent) => {
     e.preventDefault()
-    
-    // Save general settings
-    saveLocalSettings(settingsForm)
-
-    // Save Cloudinary configuration
-    saveCloudinaryConfig(cloudinaryConfig)
-
-    window.dispatchEvent(new Event('gallery_updated'))
+    dbSaveSettings(settingsForm)
     triggerNotification('Configuration parameters synchronized.')
-    refreshPhotos()
   }
 
   const handleSaveJson = () => {
+    if (!import.meta.env.DEV) {
+      alert('Read-Only Mode: Committing raw JSON cache updates is disabled on the live site. Please run the project locally.')
+      return
+    }
     setJsonError(null)
     try {
       const parsed = JSON.parse(jsonText)
@@ -512,22 +364,15 @@ export function AdminDashboardPage() {
 
   const handleDeleteInquiry = (id: string) => {
     if (!window.confirm('Remove this message from inbox?')) return
-    const current = getLocalInquiries()
-    const updated = current.filter((inq) => inq._id !== id)
-    localStorage.setItem('gallery_inquiries', JSON.stringify(updated))
-    setInquiries(updated)
+    dbDeleteInquiry(id)
     triggerNotification('Inquiry message removed.')
   }
 
-  const isCloudinarySetup = Boolean(cloudinaryConfig.cloudName && cloudinaryConfig.uploadPreset)
-
   return (
     <div className="min-h-screen bg-charcoal text-cream font-body selection:bg-gold selection:text-charcoal relative pb-16">
-      {/* Decorative Blur Ambient */}
       <div className="absolute top-0 right-0 w-[500px] h-[500px] bg-gold/5 blur-[120px] rounded-full pointer-events-none" />
       <div className="absolute bottom-0 left-0 w-[400px] h-[400px] bg-gold/5 blur-[100px] rounded-full pointer-events-none" />
 
-      {/* Header bar */}
       <header className="border-b border-white/10 py-6 px-6 md:px-12 flex flex-col sm:flex-row justify-between items-center gap-4 relative z-10 bg-charcoal/80 backdrop-blur-md sticky top-0">
         <div className="flex items-center gap-3">
           <Link to="/" className="font-display text-lg tracking-[0.3em] hover:text-gold transition-colors uppercase">
@@ -541,14 +386,6 @@ export function AdminDashboardPage() {
 
         <div className="flex items-center gap-4">
           <button
-            onClick={refreshPhotos}
-            disabled={isRefreshing}
-            className="cursor-hover border border-gold/20 hover:border-gold bg-gold/5 text-gold px-4 py-2 text-[10px] tracking-widest uppercase transition-all rounded-sm font-semibold disabled:opacity-50"
-          >
-            {isRefreshing ? 'Refreshing list...' : 'Sync Cloudinary'}
-          </button>
-          
-          <button
             onClick={handleLogout}
             className="cursor-hover border border-white/15 hover:border-red-400/50 hover:text-red-400 bg-transparent px-5 py-2 text-[10px] tracking-widest uppercase transition-all rounded-sm font-medium"
           >
@@ -557,7 +394,6 @@ export function AdminDashboardPage() {
         </div>
       </header>
 
-      {/* Success Notification */}
       <AnimatePresence>
         {successMessage && (
           <motion.div
@@ -572,11 +408,18 @@ export function AdminDashboardPage() {
       </AnimatePresence>
 
       <main className="max-w-7xl mx-auto px-6 md:px-12 mt-10 relative z-10">
-        {/* Navigation Tabs */}
+        {!import.meta.env.DEV && (
+          <div className="mb-8 p-5 border border-amber-500/20 bg-amber-500/5 text-amber-300 text-xs tracking-wider uppercase rounded-sm flex items-start sm:items-center gap-3">
+            <span className="h-2.5 w-2.5 rounded-full bg-amber-500 animate-pulse flex-shrink-0 mt-1 sm:mt-0" />
+            <p className="leading-relaxed font-body font-semibold">
+              Read-Only Mode: Local CMS operations (uploading, editing, deleting, reordering) are only active during local development. Operations are disabled here.
+            </p>
+          </div>
+        )}
         <div className="flex border-b border-white/10 gap-8 mb-10 overflow-x-auto pb-1 scrollbar-thin">
           {[
             { id: 'gallery', label: 'Gallery Manager' },
-            { id: 'settings', label: 'Settings & Cloudinary' },
+            { id: 'settings', label: 'Settings' },
             { id: 'json', label: 'Raw JSON View' },
             { id: 'inquiries', label: `Inquiries Inbox (${inquiries.length})` },
           ].map((tab) => (
@@ -599,7 +442,6 @@ export function AdminDashboardPage() {
           ))}
         </div>
 
-        {/* Tab Contents */}
         <AnimatePresence mode="wait">
           {activeTab === 'gallery' && (
             <motion.div
@@ -610,56 +452,36 @@ export function AdminDashboardPage() {
               transition={{ duration: 0.4 }}
               className="grid grid-cols-1 lg:grid-cols-3 gap-10"
             >
-              {/* Add form */}
               <div className="lg:col-span-1 border border-white/10 p-6 md:p-8 bg-charcoal-light/20 backdrop-blur-sm rounded-sm">
                 <span className="font-body text-[10px] tracking-[0.3em] text-gold uppercase block mb-2">
-                  {isCloudinarySetup ? 'Cloudinary CDN upload' : 'Local Fallback Mode'}
+                  Local direct upload
                 </span>
                 <h3 className="font-display text-xl text-cream uppercase mb-6">
-                  {isCloudinarySetup ? 'Direct File Upload' : 'Add Image URL'}
+                  Upload Photo File
                 </h3>
 
                 <form onSubmit={handleAddPhoto} className="space-y-5">
-                  {isCloudinarySetup ? (
-                    <div className="space-y-2 border border-dashed border-white/10 p-4 bg-black/10 rounded-sm">
-                      <label className="block font-body text-[10px] tracking-widest text-cream-muted uppercase cursor-pointer">
-                        Select Image File from Laptop
-                      </label>
-                      <input
-                        type="file"
-                        id="photo-file-input"
-                        required
-                        accept="image/*"
-                        onChange={(e) => {
-                          const file = e.target.files ? e.target.files[0] : null
-                          setSelectedFile(file)
-                        }}
-                        className="w-full text-xs text-cream-muted file:bg-gold file:text-charcoal file:border-none file:px-4 file:py-2 file:text-[10px] file:font-bold file:uppercase file:tracking-wider file:cursor-pointer hover:file:bg-gold-soft cursor-pointer"
-                      />
-                      {selectedFile && (
-                        <p className="text-[10px] text-gold font-body tracking-wider uppercase mt-1">
-                          File Ready: {selectedFile.name} ({(selectedFile.size / 1024 / 1024).toFixed(2)} MB)
-                        </p>
-                      )}
-                    </div>
-                  ) : (
-                    <div className="space-y-1">
-                      <label className="block font-body text-[10px] tracking-widest text-cream-muted uppercase">
-                        Image URL (Seed Fallback Mode)
-                      </label>
-                      <input
-                        type="url"
-                        required
-                        value={newPhoto.src}
-                        onChange={(e) => setNewPhoto({ ...newPhoto, src: e.target.value })}
-                        placeholder="https://images.unsplash.com/..."
-                        className="w-full bg-charcoal border border-white/10 p-3 text-sm text-cream focus:outline-none focus:border-gold/45 rounded-sm"
-                      />
-                      <p className="text-[9px] text-yellow-500/80 italic tracking-wider mt-1">
-                        Notice: To browse and upload image files directly from your laptop, configure Cloudinary in the Settings tab.
+                  <div className="space-y-2 border border-dashed border-white/10 p-4 bg-black/10 rounded-sm">
+                    <label className="block font-body text-[10px] tracking-widest text-cream-muted uppercase cursor-pointer">
+                      Select File from Laptop
+                    </label>
+                    <input
+                      type="file"
+                      id="photo-file-input"
+                      required
+                      accept="image/*"
+                      onChange={(e) => {
+                        const file = e.target.files ? e.target.files[0] : null
+                        setSelectedFile(file)
+                      }}
+                      className="w-full text-xs text-cream-muted file:bg-gold file:text-charcoal file:border-none file:px-4 file:py-2 file:text-[10px] file:font-bold file:uppercase file:tracking-wider file:cursor-pointer hover:file:bg-gold-soft cursor-pointer"
+                    />
+                    {selectedFile && (
+                      <p className="text-[10px] text-gold font-body tracking-wider uppercase mt-1">
+                        File Selected: {selectedFile.name} ({(selectedFile.size / 1024 / 1024).toFixed(2)} MB)
                       </p>
-                    </div>
-                  )}
+                    )}
+                  </div>
 
                   <div className="space-y-1">
                     <label className="block font-body text-[10px] tracking-widest text-cream-muted uppercase">
@@ -780,7 +602,7 @@ export function AdminDashboardPage() {
                     <div className="py-2 flex items-center justify-center gap-3">
                       <span className="animate-spin text-gold font-bold text-xs">⟳</span>
                       <p className="text-[10px] text-gold tracking-widest uppercase font-semibold">
-                        Uploading to Cloudinary CDN...
+                        Saving image and updating entries...
                       </p>
                     </div>
                   )}
@@ -796,33 +618,22 @@ export function AdminDashboardPage() {
                     disabled={uploadStatus === 'uploading'}
                     className="w-full bg-gold hover:bg-gold-soft text-charcoal font-bold py-3.5 px-4 text-xs tracking-widest uppercase transition-all rounded-sm shadow-md hover:shadow-[0_0_20px_rgba(201,169,98,0.2)] mt-4 disabled:opacity-50"
                   >
-                    {isCloudinarySetup ? 'Upload File from Laptop' : 'Commit Offline URL'}
+                    Upload File to Gallery
                   </button>
                 </form>
               </div>
 
-              {/* Photos List Manager */}
               <div className="lg:col-span-2 space-y-6">
                 <div className="border border-white/10 p-6 md:p-8 bg-charcoal-light/10 backdrop-blur-sm rounded-sm">
                   <div className="flex justify-between items-center mb-6">
                     <div>
-                      <h3 className="font-display text-xl text-cream uppercase">Photographs Archive</h3>
+                      <h3 className="font-display text-xl text-cream uppercase">Photographs Directory</h3>
                       <p className="text-cream-muted text-xs font-body mt-1">
-                        {isCloudinarySetup
-                          ? `Displaying ${photos.length} photos loaded from Cloudinary CDN.`
-                          : `Displaying ${photos.length} photos in Offline Mode.`}
+                        Photographs archive — displaying {photos.length} items.
                       </p>
                     </div>
-                    <button
-                      onClick={refreshPhotos}
-                      disabled={isRefreshing}
-                      className="text-xs font-body text-gold hover:underline uppercase tracking-wider disabled:opacity-50"
-                    >
-                      {isRefreshing ? 'Syncing...' : '↻ Refresh list'}
-                    </button>
                   </div>
 
-                  {/* Inline edit panel modal */}
                   <AnimatePresence>
                     {editingPhotoId && editForm && (
                       <motion.div
@@ -959,8 +770,8 @@ export function AdminDashboardPage() {
                         Archive is empty. Upload files from your laptop to begin.
                       </p>
                     ) : (
-                      photos.map((p) => {
-                        const isCloudinary = p.id.startsWith('cis_gallery/')
+                      photos.map((p, idx) => {
+                        const isLocalAsset = p.src.startsWith('/assets/')
                         return (
                           <div
                             key={p.id}
@@ -980,9 +791,9 @@ export function AdminDashboardPage() {
                                 <div className="flex items-center gap-2">
                                   <h4 className="font-heading text-sm text-cream font-medium">{p.title}</h4>
                                   <span className={`text-[8px] font-semibold tracking-wider px-1.5 py-0.5 rounded-sm uppercase ${
-                                    isCloudinary ? 'border border-gold/30 text-gold' : 'border border-white/10 text-cream-muted'
+                                    isLocalAsset ? 'border border-gold/30 text-gold bg-gold/5' : 'border border-white/10 text-cream-muted'
                                   }`}>
-                                    {isCloudinary ? 'Cloudinary CDN' : 'Offline Seed'}
+                                    {isLocalAsset ? 'Local Photo' : 'Pre-seeded'}
                                   </span>
                                 </div>
                                 <p className="font-body text-[10px] text-cream-muted uppercase tracking-wider mt-1">
@@ -992,23 +803,44 @@ export function AdminDashboardPage() {
                             </div>
 
                             <div className="flex items-center gap-3 w-full sm:w-auto justify-end">
-                              {/* Edit Button */}
+                              {/* Reordering Carets */}
+                              <div className="flex items-center gap-1">
+                                <button
+                                  type="button"
+                                  onClick={() => handleMovePhoto(idx, 'up')}
+                                  disabled={idx === 0}
+                                  className="p-1.5 border border-white/10 text-cream-muted hover:text-gold disabled:opacity-20 hover:border-gold/20 transition-all rounded-sm"
+                                  title="Move Up"
+                                >
+                                  ▲
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleMovePhoto(idx, 'down')}
+                                  disabled={idx === photos.length - 1}
+                                  className="p-1.5 border border-white/10 text-cream-muted hover:text-gold disabled:opacity-20 hover:border-gold/20 transition-all rounded-sm"
+                                  title="Move Down"
+                                >
+                                  ▼
+                                </button>
+                              </div>
+
                               <button
+                                type="button"
                                 onClick={() => startEditing(p)}
                                 className="px-3 py-1.5 text-[10px] tracking-widest uppercase border border-white/10 text-cream-muted hover:border-gold/30 hover:text-gold transition-colors rounded-sm"
                               >
                                 Edit
                               </button>
 
-                              {/* Toggle Featured Indicator */}
                               {p.featured && (
                                 <span className="px-2 py-1 text-[8px] bg-gold/10 border border-gold/30 text-gold font-bold uppercase tracking-wider rounded-sm">
                                   Hero Loop
                                 </span>
                               )}
 
-                              {/* Delete Button */}
                               <button
+                                type="button"
                                 onClick={() => handleDeletePhoto(p)}
                                 className="px-3 py-1.5 text-[10px] tracking-widest uppercase border border-red-500/10 text-red-400/80 hover:bg-red-500/10 hover:border-red-500/50 transition-colors rounded-sm"
                               >
@@ -1034,91 +866,26 @@ export function AdminDashboardPage() {
               transition={{ duration: 0.4 }}
               className="max-w-2xl mx-auto space-y-8"
             >
-              {/* Cloudinary Config Form */}
               <div className="border border-gold/20 p-6 md:p-10 bg-charcoal-light/10 backdrop-blur-sm rounded-sm">
-                <div className="flex items-center justify-between mb-2">
-                  <span className="font-body text-[10px] tracking-[0.3em] text-gold uppercase block">
-                    Cloud Image Storage Integration
+                {/* Local CMS Config Status */}
+                <div className="border border-gold/20 p-6 bg-black/10 rounded-sm mb-6">
+                  <span className="font-body text-[10px] tracking-[0.3em] text-gold uppercase block mb-2">
+                    System Status
                   </span>
-                  <span className={`text-[9px] font-bold tracking-widest uppercase px-2 py-0.5 border rounded-sm ${
-                    isCloudinarySetup ? 'border-gold text-gold bg-gold/5' : 'border-red-500/40 text-red-400'
-                  }`}>
-                    {isCloudinarySetup ? 'CDN Active' : 'Off-Grid Mode'}
-                  </span>
+                  <h3 className="font-display text-lg text-cream uppercase mb-3">Local Image CMS Mode Active</h3>
+                  <p className="font-body text-xs text-cream-muted leading-relaxed">
+                    The website is currently configured to use a <strong>100% Local Image System</strong>. 
+                    Images are uploaded directly from your laptop and saved to <code>src/assets/photos/</code>, 
+                    automatically updating <code>src/data/gallery.json</code> in real-time.
+                  </p>
+                  <div className="mt-4 flex items-center gap-2">
+                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                    <span className="font-body text-[9px] uppercase tracking-widest text-emerald-400 font-bold">Local API Active</span>
+                  </div>
                 </div>
-                <h3 className="font-display text-2xl text-cream uppercase mb-6">Cloudinary Integration Console</h3>
 
                 <form onSubmit={handleSaveSettings} className="space-y-6">
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
-                    <div className="space-y-1">
-                      <label className="block font-body text-[10px] tracking-widest text-cream-muted uppercase">
-                        Cloud Name *
-                      </label>
-                      <input
-                        type="text"
-                        required
-                        value={cloudinaryConfig.cloudName}
-                        onChange={(e) => setCloudinaryConfig({ ...cloudinaryConfig, cloudName: e.target.value })}
-                        placeholder="your-cloud-name"
-                        className="w-full bg-charcoal border border-white/10 p-3.5 text-sm text-cream focus:outline-none focus:border-gold/45 rounded-sm"
-                      />
-                    </div>
-
-                    <div className="space-y-1">
-                      <label className="block font-body text-[10px] tracking-widest text-cream-muted uppercase">
-                        Unsigned Upload Preset Name *
-                      </label>
-                      <input
-                        type="text"
-                        required
-                        value={cloudinaryConfig.uploadPreset}
-                        onChange={(e) => setCloudinaryConfig({ ...cloudinaryConfig, uploadPreset: e.target.value })}
-                        placeholder="your-unsigned-preset"
-                        className="w-full bg-charcoal border border-white/10 p-3.5 text-sm text-cream focus:outline-none focus:border-gold/45 rounded-sm"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
-                    <div className="space-y-1">
-                      <label className="block font-body text-[10px] tracking-widest text-cream-muted uppercase">
-                        API Key (Required for Delete/Rename)
-                      </label>
-                      <input
-                        type="text"
-                        value={cloudinaryConfig.apiKey}
-                        onChange={(e) => setCloudinaryConfig({ ...cloudinaryConfig, apiKey: e.target.value })}
-                        placeholder="your-api-key"
-                        className="w-full bg-charcoal border border-white/10 p-3.5 text-sm text-cream focus:outline-none focus:border-gold/45 rounded-sm font-mono"
-                      />
-                    </div>
-
-                    <div className="space-y-1">
-                      <label className="block font-body text-[10px] tracking-widest text-cream-muted uppercase">
-                        API Secret (Stored locally only)
-                      </label>
-                      <input
-                        type="password"
-                        value={cloudinaryConfig.apiSecret}
-                        onChange={(e) => setCloudinaryConfig({ ...cloudinaryConfig, apiSecret: e.target.value })}
-                        placeholder="••••••••••••••••"
-                        className="w-full bg-charcoal border border-white/10 p-3.5 text-sm text-cream focus:outline-none focus:border-gold/45 rounded-sm font-mono"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="text-[10px] text-cream-muted/70 bg-black/25 p-4 border border-white/5 space-y-2 rounded-sm font-body">
-                    <p className="font-bold text-gold uppercase tracking-wider">Required Cloudinary Dashboard Setup:</p>
-                    <ol className="list-decimal list-inside space-y-1">
-                      <li>Log in to your Cloudinary console.</li>
-                      <li>Go to **Settings (gear icon) ➔ Upload**. Scroll to **Upload presets** and click **Add upload preset**.</li>
-                      <li>Set Mode to **Unsigned**, name it, and set the Folder parameter to **cis_gallery**. Click Save.</li>
-                      <li>Go to **Settings ➔ Security**. Locate **Restricted media types** and verify that **Resource list** is **Checked (Enabled)**. This allows the website to fetch your image directory dynamically.</li>
-                    </ol>
-                  </div>
-
-                  {/* General settings submit nested */}
-                  <div className="border-t border-white/10 pt-6">
+                  <div>
                     <span className="font-body text-[10px] tracking-[0.3em] text-gold uppercase block mb-6">
                       Brand Parameters
                     </span>

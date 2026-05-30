@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { GalleryCategory, Photo } from '../types/photo'
-import { getDynamicPhotos } from '../utils/localDB'
+import galleryData from '../data/gallery.json'
 
 export interface SearchParams {
   q?: string
@@ -12,102 +12,110 @@ export function useInfinitePhotos(
   category: GalleryCategory,
   searchParams: SearchParams = {},
 ) {
+  const [allPhotos, setAllPhotos] = useState<Photo[]>([])
   const [photos, setPhotos] = useState<Photo[]>([])
   const [page, setPage] = useState(1)
   const [hasMore, setHasMore] = useState(true)
   const [loading, setLoading] = useState(true)
   const [loadingMore, setLoadingMore] = useState(false)
 
-  const load = useCallback(
+  // 1. Load Photos from local gallery.json
+  useEffect(() => {
+    setLoading(true)
+    const mapped: Photo[] = (galleryData as any[]).map((item) => ({
+      id: String(item.id),
+      title: item.title,
+      category: item.category,
+      src: item.image,
+      displayUrl: item.image,
+      previewUrl: item.image,
+      aspect: item.aspect || 'wide',
+      location: item.location || '',
+      camera: item.camera || '',
+      date: item.date || '',
+      featured: !!item.featured,
+      likes: Number(item.likes) || 0,
+      views: Number(item.views) || 0,
+      commentCount: Number(item.commentCount) || 0,
+      description: item.description || '',
+      alt: item.title,
+    }))
+    setAllPhotos(mapped)
+    setLoading(false)
+  }, [galleryData])
+
+  // 2. Perform Filtering & Pagination when dataset or criteria changes
+  const applyFiltersAndPaginate = useCallback(
     (pageNum: number) => {
-      if (pageNum === 1) setLoading(true)
-      else setLoadingMore(true)
+      if (pageNum > 1) {
+        setLoadingMore(true)
+      }
 
-      getDynamicPhotos()
-        .then((allPhotos) => {
-          let list = allPhotos
+      let list = allPhotos
 
-          // 1. Category Filter
-          if (category !== 'All') {
-            list = list.filter((p) => p.category === category)
-          }
+      // Category Filter
+      if (category !== 'All') {
+        list = list.filter((p) => p.category === category)
+      }
 
-          // 2. Query Search
-          if (searchParams.q) {
-            const qLower = searchParams.q.toLowerCase()
-            list = list.filter(
-              (p) =>
-                p.title.toLowerCase().includes(qLower) ||
-                (p.description && p.description.toLowerCase().includes(qLower)) ||
-                p.location.toLowerCase().includes(qLower) ||
-                p.camera.toLowerCase().includes(qLower) ||
-                (p.tags && p.tags.some((t) => t.toLowerCase().includes(qLower))) ||
-                (p.aiTags && p.aiTags.some((t) => t.toLowerCase().includes(qLower))),
-            )
-          }
+      // Query Search
+      if (searchParams.q) {
+        const qLower = searchParams.q.toLowerCase()
+        list = list.filter(
+          (p) =>
+            p.title.toLowerCase().includes(qLower) ||
+            (p.description && p.description.toLowerCase().includes(qLower)) ||
+            p.location.toLowerCase().includes(qLower) ||
+            p.camera.toLowerCase().includes(qLower) ||
+            (p.tags && p.tags.some((t) => t.toLowerCase().includes(qLower))) ||
+            (p.aiTags && p.aiTags.some((t) => t.toLowerCase().includes(qLower))),
+        )
+      }
 
-          // 3. Mood Filter
-          if (searchParams.mood) {
-            const mLower = searchParams.mood.toLowerCase()
-            list = list.filter(
-              (p) =>
-                (p.mood && p.mood.toLowerCase().includes(mLower)) ||
-                (p.tags && p.tags.some((t) => t.toLowerCase().includes(mLower))) ||
-                (p.aiTags && p.aiTags.some((t) => t.toLowerCase().includes(mLower))),
-            )
-          }
+      // Mood Filter
+      if (searchParams.mood) {
+        const mLower = searchParams.mood.toLowerCase()
+        list = list.filter(
+          (p) =>
+            (p.mood && p.mood.toLowerCase().includes(mLower)) ||
+            (p.tags && p.tags.some((t) => t.toLowerCase().includes(mLower))) ||
+            (p.aiTags && p.aiTags.some((t) => t.toLowerCase().includes(mLower))),
+        )
+      }
 
-          // 4. Tag Filter
-          if (searchParams.tag) {
-            const tLower = searchParams.tag.toLowerCase()
-            list = list.filter(
-              (p) =>
-                (p.tags && p.tags.some((t) => t.toLowerCase() === tLower)) ||
-                (p.aiTags && p.aiTags.some((t) => t.toLowerCase() === tLower)),
-            )
-          }
+      // Tag Filter
+      if (searchParams.tag) {
+        const tLower = searchParams.tag.toLowerCase()
+        list = list.filter(
+          (p) =>
+            (p.tags && p.tags.some((t) => t.toLowerCase() === tLower)) ||
+            (p.aiTags && p.aiTags.some((t) => t.toLowerCase() === tLower)),
+        )
+      }
 
-          // Paginate locally
-          const limit = 24
-          const startIndex = 0
-          const endIndex = pageNum * limit
-          const paginatedPhotos = list.slice(startIndex, endIndex)
-          const moreAvailable = list.length > endIndex
+      const limit = 24
+      const endIndex = pageNum * limit
+      const paginated = list.slice(0, endIndex)
+      const moreAvailable = list.length > endIndex
 
-          setPhotos(paginatedPhotos)
-          setHasMore(moreAvailable)
-          setPage(pageNum)
-        })
-        .catch((err) => {
-          console.error('[useInfinitePhotos] Error processing dynamic photos:', err)
-        })
-        .finally(() => {
-          setLoading(false)
-          setLoadingMore(false)
-        })
+      setPhotos(paginated)
+      setHasMore(moreAvailable)
+      setPage(pageNum)
+      setLoadingMore(false)
     },
-    [category, searchParams.q, searchParams.mood, searchParams.tag],
+    [allPhotos, category, searchParams.q, searchParams.mood, searchParams.tag],
   )
 
   useEffect(() => {
     setPage(1)
-    load(1)
-
-    const handleUpdate = () => load(1)
-    window.addEventListener('storage', handleUpdate)
-    window.addEventListener('gallery_updated', handleUpdate)
-    return () => {
-      window.removeEventListener('storage', handleUpdate)
-      window.removeEventListener('gallery_updated', handleUpdate)
-    }
-  }, [load])
+    applyFiltersAndPaginate(1)
+  }, [applyFiltersAndPaginate])
 
   const loadMore = () => {
     if (!loadingMore && hasMore) {
-      load(page + 1)
+      applyFiltersAndPaginate(page + 1)
     }
   }
 
-  return { photos, loading, loadingMore, hasMore, loadMore, refresh: () => load(1) }
+  return { photos, loading, loadingMore, hasMore, loadMore, refresh: () => applyFiltersAndPaginate(1) }
 }
-
