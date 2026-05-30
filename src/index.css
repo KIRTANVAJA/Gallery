@@ -1,0 +1,261 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+  }
+
+  html.light {
+    --bg-primary: #f5f0e8;
+    --bg-secondary: #ebe6de;
+    --text-primary: #1a1a1a;
+    --text-secondary: #5a5650;
+    --accent: #a88b4a;
+    --grain-opacity: 0.06;
+  }
+
+  html.dark {
+    --bg-primary: #0a0a0a;
+    --bg-secondary: #141414;
+    --text-primary: #f5f0e8;
+    --text-secondary: #9a9590;
+    --accent: #c9a962;
+    --grain-opacity: 0.08;
+  }
+
+  body {
+    @apply font-body antialiased overflow-x-hidden;
+    background-color: var(--bg-primary);
+    color: var(--text-primary);
+    cursor: none;
+  }
+
+  @media (max-width: 768px) {
+    body {
+      cursor: auto;
+    }
+  }
+
+  ::selection {
+    @apply bg-gold/30 text-cream;
+  }
+
+  html.light .text-cream {
+    color: var(--text-primary);
+  }
+
+  html.light .text-cream-muted {
+    color: var(--text-secondary);
+  }
+
+  .protected-image img {
+    -webkit-user-drag: none;
+    user-select: none;
+  }
+}
+
+@layer components {
+  .glass-nav {
+    @apply backdrop-blur-xl border-b border-white/5;
+    background: rgba(10, 10, 10, 0.55);
+  }
+
+  html.light .glass-nav {
+    background: rgba(245, 240, 232, 0.75);
+    @apply border-black/5;
+  }
+
+  .text-gradient-gold {
+    @apply bg-clip-text text-transparent;
+    background-image: linear-gradient(135deg, #f5f0e8 0%, #c9a962 50%, #f5f0e8 100%);
+  }
+
+  .glow-gold {
+    box-shadow: 0 0 40px rgba(201, 169, 98, 0.15);
+  }
+
+  .section-padding {
+    @apply px-6 md:px-12 lg:px-20 py-24 md:py-32;
+  }
+
+  .masonry-grid {
+    column-gap: 1rem;
+  }
+
+  @media (min-width: 640px) {
+    .masonry-grid {
+      column-count: 2;
+    }
+  }
+
+  @media (min-width: 1024px) {
+    .masonry-grid {
+      column-count: 3;
+    }
+  }
+
+  @media (min-width: 1280px) {
+    .masonry-grid {
+      column-count: 4;
+    }
+  }
+
+  .masonry-item {
+    break-inside: avoid;
+    margin-bottom: 1rem;
+  }
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--bg-secondary);
+}
+
+::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, #3a3a3a, #c9a962);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #c9a962;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #c9a962 var(--bg-secondary);
+}
+
+/* Grain texture */
+.grain-overlay {
+  pointer-events: none;
+  position: fixed;
+  inset: 0;
+  z-index: 9998;
+  opacity: var(--grain-opacity);
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
+  mix-blend-mode: overlay;
+}
+
+/* Focus styles for accessibility */
+:focus-visible {
+  @apply outline-2 outline-offset-2 outline-gold;
+}
+
+/* ========================================== */
+/* DYNAMIC MOOD SHIFT STYLES (PHASE 4) */
+/* ========================================== */
+
+/* 1. Rainy Nights Mood */
+body.mood-rainy-nights {
+  --bg-primary: #06090f;
+  --bg-secondary: #0c121e;
+  --text-primary: #c3d1e6;
+  --text-secondary: #748aa6;
+  --accent: #507fb3;
+  --grain-opacity: 0.16;
+  filter: saturate(0.8) sepia(0.1);
+}
+body.mood-rainy-nights::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 9999;
+  background: radial-gradient(circle, transparent 70%, rgba(6, 9, 15, 0.4) 100%);
+}
+
+/* 2. Golden Hour Mood */
+body.mood-golden-hour {
+  --bg-primary: #120a02;
+  --bg-secondary: #1a0f03;
+  --text-primary: #faebd7;
+  --text-secondary: #cba374;
+  --accent: #dca752;
+  --grain-opacity: 0.07;
+}
+body.mood-golden-hour::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 9999;
+  background: radial-gradient(circle at 10% 10%, rgba(220, 167, 82, 0.08) 0%, transparent 60%);
+  mix-blend-mode: color-burn;
+}
+
+/* 3. Nostalgic Mood */
+body.mood-nostalgic {
+  --bg-primary: #1c1813;
+  --bg-secondary: #26211a;
+  --text-primary: #ebd9c5;
+  --text-secondary: #a3907c;
+  --accent: #bda27e;
+  --grain-opacity: 0.22;
+  filter: sepia(0.35) contrast(0.95);
+  font-family: 'Playfair Display', Georgia, serif;
+}
+
+/* 4. Lonely Mood */
+body.mood-lonely {
+  --bg-primary: #030303;
+  --bg-secondary: #0a0a0a;
+  --text-primary: #e0e0e0;
+  --text-secondary: #6e6e6e;
+  --accent: #78909c;
+  --grain-opacity: 0.12;
+}
+body.mood-lonely::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 9999;
+  box-shadow: inset 0 0 100px rgba(0,0,0,0.85);
+}
+
+/* 5. Dreamy Mood */
+body.mood-dreamy {
+  --bg-primary: #1a1624;
+  --bg-secondary: #262033;
+  --text-primary: #f0e6ff;
+  --text-secondary: #ac99c9;
+  --accent: #d2a6ff;
+  --grain-opacity: 0.04;
+}
+body.mood-dreamy img {
+  filter: brightness(1.05) contrast(0.98) blur(0.2px);
+  box-shadow: 0 0 25px rgba(210, 166, 255, 0.08);
+}
+
+/* 6. Peaceful Mood */
+body.mood-peaceful {
+  --bg-primary: #0a0e0a;
+  --bg-secondary: #121812;
+  --text-primary: #e2ede2;
+  --text-secondary: #8c9c8c;
+  --accent: #7cb342;
+  --grain-opacity: 0.03;
+  transition: background-color 2.5s ease, color 2.5s ease;
+}
+
+/* 7. Monochrome Mood */
+body.mood-monochrome {
+  --bg-primary: #000000;
+  --bg-secondary: #0d0d0d;
+  --text-primary: #ffffff;
+  --text-secondary: #777777;
+  --accent: #ffffff;
+  --grain-opacity: 0.28;
+  filter: grayscale(1) contrast(1.18);
+}
+body.mood-monochrome .text-gold {
+  color: #ffffff !important;
+  text-shadow: 0 0 5px rgba(255,255,255,0.4);
+}
+
