@@ -1,7 +1,7 @@
 import { motion } from 'framer-motion'
 import { FormEvent, useEffect, useState } from 'react'
 import { getLocalSettings } from '../../utils/localDB'
-import { subscribeSettings, dbAddInquiry } from '../../utils/firebase'
+import { subscribeSettings, dbAddInquiry } from '../../utils/localDB'
 
 
 const socialLinks = [
@@ -29,6 +29,15 @@ const socialLinks = [
     icon: (
       <svg className="h-5 w-5" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
         <path d="M23.977 6.416c-.105 2.338-1.739 5.543-4.894 9.609-3.268 4.247-6.026 6.37-8.29 6.37-1.409 0-2.601-1.302-3.573-3.906l-1.953-7.422c-.729-2.695-1.512-4.043-2.349-4.043-.18 0-.806.378-1.88 1.132L0 7.265c1.185-1.039 2.351-2.077 3.499-3.115 1.581-1.362 2.767-2.082 3.562-2.16 1.87-.18 3.024 1.1 3.461 3.838.466 2.953.789 4.789.969 5.507.539 2.45 1.131 3.674 1.776 3.674.502 0 1.256-.796 2.265-2.385 1.004-1.589 1.538-2.797 1.591-3.622.108-1.4-.403-2.102-1.532-2.102-.544 0-1.101.124-1.671.372 1.107-3.617 3.223-5.373 6.349-5.27 2.318.069 3.411 1.565 3.275 4.488z" />
+      </svg>
+    ),
+  },
+  {
+    name: 'Vero',
+    href: 'https://vero.co',
+    icon: (
+      <svg className="h-5 w-5" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-2.5 6.5l-3.8 6.3c-.15.25-.43.4-.7.4s-.55-.15-.7-.4L7.5 9.5c-.2-.3-.05-.75.3-.75h7.4c.35 0 .5.45.3.75z" />
       </svg>
     ),
   },
@@ -64,6 +73,9 @@ export function Contact() {
       )
       setSubmitted(true)
       form.reset()
+      setTimeout(() => {
+        setSubmitted(false)
+      }, 4000)
     } catch {
       setError('Unable to send. Please try again.')
     }
@@ -135,7 +147,7 @@ export function Contact() {
             className="cursor-hover flex h-12 w-12 items-center justify-center rounded-full border border-white/10 text-cream-muted transition-all duration-500 hover:border-gold/50 hover:text-gold hover:shadow-[0_0_30px_rgba(201,169,98,0.25)]"
             aria-label="Instagram"
           >
-            {socialLinks[0].icon}
+            {socialLinks.find(s => s.name === 'Instagram')?.icon}
           </a>
           <a
             href={settings.veroUrl || 'https://vero.co'}
@@ -144,7 +156,7 @@ export function Contact() {
             className="cursor-hover flex h-12 w-12 items-center justify-center rounded-full border border-white/10 text-cream-muted transition-all duration-500 hover:border-gold/50 hover:text-gold hover:shadow-[0_0_30px_rgba(201,169,98,0.25)]"
             aria-label="Vero"
           >
-            {socialLinks[2].icon}
+            {socialLinks.find(s => s.name === 'Vero')?.icon}
           </a>
         </div>
 

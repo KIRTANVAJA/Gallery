@@ -29,13 +29,6 @@
     @apply font-body antialiased overflow-x-hidden;
     background-color: var(--bg-primary);
     color: var(--text-primary);
-    cursor: none;
-  }
-
-  @media (max-width: 768px) {
-    body {
-      cursor: auto;
-    }
   }
 
   ::selection {

@@ -1,7 +1,7 @@
 import { motion, useScroll, useTransform } from 'framer-motion'
 import { useEffect, useRef, useState } from 'react'
 import { getLocalSettings } from '../../utils/localDB'
-import { subscribeSettings } from '../../utils/firebase'
+import { subscribeSettings } from '../../utils/localDB'
 
 export function About() {
   const ref = useRef<HTMLElement>(null)

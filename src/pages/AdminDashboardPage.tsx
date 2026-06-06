@@ -2,17 +2,17 @@ import React, { useEffect, useState } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
-  saveLocalPhotos,
   getLocalSettings,
   type LocalInquiry,
-} from '../utils/localDB'
-import {
-  subscribePhotos,
+  saveLocalPhotos,
+  getLocalPhotos,
   subscribeSettings,
   subscribeInquiries,
   dbSaveSettings,
   dbDeleteInquiry,
-} from '../utils/firebase'
+  getDynamicPhotos,
+} from '../utils/localDB'
+import { PhotoLibraryErrorBoundary } from '../components/admin/PhotoLibraryErrorBoundary'
 import type { Photo, PhotoCategory } from '../types/photo'
 import { SiteSettings } from '../data/settings'
 
@@ -20,12 +20,10 @@ export function AdminDashboardPage() {
   const navigate = useNavigate()
   const [photos, setPhotos] = useState<Photo[]>([])
   const [inquiries, setInquiries] = useState<LocalInquiry[]>([])
-
   // UI state
-  const [activeTab, setActiveTab] = useState<'gallery' | 'settings' | 'json' | 'inquiries'>('gallery')
-  const [jsonText, setJsonText] = useState('')
-  const [jsonError, setJsonError] = useState<string | null>(null)
+  const [activeTab, setActiveTab] = useState<'gallery' | 'settings' | 'json' | 'inquiries'>('settings')
   const [successMessage, setSuccessMessage] = useState<string | null>(null)
+  const [searchQuery, setSearchQuery] = useState('')
 
   // Selected file for upload
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
@@ -64,6 +62,10 @@ export function AdminDashboardPage() {
     src: string
   } | null>(null)
 
+  // JSON View state
+  const [jsonText, setJsonText] = useState('')
+  const [jsonError, setJsonError] = useState<string | null>(null)
+
   // Settings form state
   const [settingsForm, setSettingsForm] = useState<SiteSettings>({
     title: '',
@@ -77,13 +79,18 @@ export function AdminDashboardPage() {
     passcode: '',
   })
 
+  console.log("Photo Library rendering. Photos state count:", Array.isArray(photos) ? photos.length : 'undefined')
+
   useEffect(() => {
-    // 1. Initial local fallbacks
+    console.log("Photo Library mounted");
+
+    // 1. Initial local settings fallback
     const allSettings = getLocalSettings()
     setSettingsForm(allSettings)
 
-    // 2. Register real-time local HMR/database listeners
-    const unsubPhotos = subscribePhotos((latestPhotos) => {
+    // 2. Fetch photos dynamically on mount
+    getDynamicPhotos().then((latestPhotos) => {
+      console.log("Fetched image data on mount:", latestPhotos);
       setPhotos(latestPhotos)
       setJsonText(JSON.stringify(latestPhotos, null, 2))
     })
@@ -96,10 +103,19 @@ export function AdminDashboardPage() {
       setInquiries(latestInquiries)
     })
 
+    const handleGalleryUpdated = () => {
+      getDynamicPhotos().then((latestPhotos) => {
+        console.log("Fetched image data on update:", latestPhotos);
+        setPhotos(latestPhotos)
+        setJsonText(JSON.stringify(latestPhotos, null, 2))
+      })
+    }
+    window.addEventListener('gallery_updated', handleGalleryUpdated)
+
     return () => {
-      if (unsubPhotos) unsubPhotos()
       if (unsubSettings) unsubSettings()
       if (unsubInquiries) unsubInquiries()
+      window.removeEventListener('gallery_updated', handleGalleryUpdated)
     }
   }, [])
 
@@ -114,14 +130,67 @@ export function AdminDashboardPage() {
     navigate('/')
   }
 
-  // --- ADD / UPLOAD PHOTO (LOCAL CMS) ---
+  // --- EXPORT / BACKUP JSON ---
+  const handleExportJson = () => {
+    console.log("handleExportJson triggered");
+    const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(photos, null, 2))
+    const downloadAnchor = document.createElement('a')
+    downloadAnchor.setAttribute("href", dataStr)
+    downloadAnchor.setAttribute("download", `gallery_backup_${Date.now()}.json`)
+    document.body.appendChild(downloadAnchor)
+    downloadAnchor.click()
+    downloadAnchor.remove()
+    triggerNotification('Gallery backup file generated.')
+  }
+
+  // --- IMPORT JSON ---
+  const handleImportJson = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files ? e.target.files[0] : null
+    if (!file) return
+
+    const reader = new FileReader()
+    reader.onload = async (event) => {
+      try {
+        const content = event.target?.result as string
+        const parsed = JSON.parse(content)
+        if (!Array.isArray(parsed)) {
+          throw new Error('Gallery data must be a JSON array of photos.')
+        }
+
+        if (!confirm(`Are you sure you want to overwrite your entire gallery on disk with the imported ${parsed.length} photos?`)) {
+          return
+        }
+
+        // Post to the backend endpoint to overwrite gallery.json
+        const response = await fetch('/api/local-gallery', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(parsed)
+        })
+
+        if (!response.ok) {
+          const errData = await response.json()
+          throw new Error(errData.error || 'Failed to import gallery data to disk')
+        }
+
+        saveLocalPhotos(parsed)
+        setPhotos(parsed)
+        setJsonText(JSON.stringify(parsed, null, 2))
+        window.dispatchEvent(new Event('gallery_updated'))
+        triggerNotification('Gallery data imported and updated on disk.')
+      } catch (err: any) {
+        alert(`Import Failed: ${err.message}`)
+      }
+    }
+    reader.readAsText(file)
+  }
+
+  // --- ADD / UPLOAD PHOTO ---
   const handleAddPhoto = async (e: React.FormEvent) => {
     e.preventDefault()
-
-    if (!import.meta.env.DEV) {
-      alert('Read-Only Mode: Image upload is disabled on the live site. Please run the project locally to upload files.')
-      return
-    }
+    console.log("handleAddPhoto triggered");
 
     if (!selectedFile) {
       alert('Please select an image file to upload.')
@@ -141,6 +210,8 @@ export function AdminDashboardPage() {
       reader.onload = async () => {
         try {
           const fileData = reader.result as string
+
+          console.log("Uploading locally to disk via local CMS API...");
           const response = await fetch('/api/local-upload', {
             method: 'POST',
             headers: {
@@ -161,13 +232,42 @@ export function AdminDashboardPage() {
 
           if (!response.ok) {
             const errData = await response.json()
-            throw new Error(errData.error || 'Upload failed')
+            throw new Error(errData.error || 'Local upload failed')
+          }
+
+          const result = await response.json()
+          const item = result.item
+
+          if (item) {
+            const newPhotoEntry: Photo = {
+              id: String(item.id),
+              slug: String(item.id),
+              title: item.title || 'Untitled',
+              category: item.category as PhotoCategory,
+              location: item.location || '',
+              camera: item.camera || '',
+              lens: '',
+              featured: !!item.featured,
+              likes: 0,
+              views: 0,
+              commentCount: 0,
+              aspect: (item.aspect || 'wide') as 'tall' | 'wide' | 'square',
+              src: item.image || '',
+              displayUrl: item.image || '',
+              alt: item.title || '',
+              date: item.date || '',
+              description: item.description || '',
+            }
+
+            const current = getLocalPhotos()
+            const updated = [newPhotoEntry, ...current]
+            saveLocalPhotos(updated)
+            setPhotos(updated)
           }
 
           setUploadStatus('success')
           setSelectedFile(null)
 
-          // Reset Form
           setNewPhoto({
             title: '',
             src: '',
@@ -185,12 +285,12 @@ export function AdminDashboardPage() {
           const fileInput = document.getElementById('photo-file-input') as HTMLInputElement
           if (fileInput) fileInput.value = ''
 
-          triggerNotification('Photograph uploaded and saved locally.')
+          triggerNotification('Photograph uploaded and saved locally to disk.')
           window.dispatchEvent(new Event('gallery_updated'))
         } catch (err: any) {
           console.error('[Upload Error]', err)
           setUploadStatus('error')
-          setUploadError(err.message || 'Local upload failed.')
+          setUploadError(err.message || 'Upload failed.')
         }
       }
       reader.onerror = () => {
@@ -203,64 +303,79 @@ export function AdminDashboardPage() {
     }
   }
 
-  // --- DELETE PHOTO (LOCAL CMS) ---
+  // --- DELETE PHOTO ---
   const handleDeletePhoto = async (photo: Photo) => {
-    if (!import.meta.env.DEV) {
-      alert('Read-Only Mode: Deleting photos is disabled on the live site. Please run the project locally.')
-      return
+    console.log("handleDeletePhoto triggered for:", photo);
+    const photoId = photo?.id || (photo as any)?.public_id || "";
+    if (!photoId) {
+      alert("Invalid photo ID.");
+      return;
     }
-    if (!confirm(`Are you sure you want to delete "${photo.title}"?`)) return
+    const title = photo?.title || "Untitled";
+
+    if (!confirm(`Are you sure you want to delete "${title}"?`)) return
 
     try {
+      console.log("Deleting photo locally from disk via local CMS API. ID:", photoId);
       const response = await fetch('/api/local-delete', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ id: photo.id })
+        body: JSON.stringify({ id: photoId })
       })
 
       if (!response.ok) {
         const errData = await response.json()
-        throw new Error(errData.error || 'Delete failed')
+        throw new Error(errData.error || 'Local delete failed')
       }
 
-      triggerNotification('Photograph deleted locally.')
+      const current = getLocalPhotos()
+      const updated = current.filter((p) => p.id !== photoId)
+      saveLocalPhotos(updated)
+      setPhotos(updated)
+
+      triggerNotification('Photograph deleted locally from disk.')
       window.dispatchEvent(new Event('gallery_updated'))
     } catch (err: any) {
+      console.error('[Delete Error]', err)
       alert(`Deletion Failed: ${err.message}`)
     }
   }
 
   // --- START EDITING ---
   const startEditing = (photo: Photo) => {
-    setEditingPhotoId(photo.id)
+    console.log("startEditing triggered for:", photo);
+    const photoId = photo?.id || (photo as any)?.public_id || "";
+    const title = photo?.title || "Untitled";
+    const category = photo?.category || "Cinematic";
+    const src = photo?.src || (photo as any)?.url || "";
+
+    setEditingPhotoId(photoId)
     setEditForm({
-      id: photo.id,
-      title: photo.title,
-      category: photo.category,
-      location: photo.location || '',
-      camera: photo.camera || '',
-      lens: photo.lens || '',
-      date: photo.date || '',
-      aspect: photo.aspect,
-      featured: photo.featured,
-      alt: photo.alt || '',
-      description: photo.description || '',
-      src: photo.src,
+      id: photoId,
+      title: title,
+      category: category,
+      location: photo?.location || '',
+      camera: photo?.camera || '',
+      lens: photo?.lens || '',
+      date: photo?.date || '',
+      aspect: photo?.aspect || 'wide',
+      featured: !!photo?.featured,
+      alt: photo?.alt || title,
+      description: photo?.description || '',
+      src: src,
     })
   }
 
-  // --- SAVE EDIT (LOCAL CMS) ---
+  // --- SAVE EDIT ---
   const handleSaveEdit = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!import.meta.env.DEV) {
-      alert('Read-Only Mode: Editing photo details is disabled on the live site. Please run the project locally.')
-      return
-    }
+    console.log("handleSaveEdit triggered");
     if (!editForm) return
 
     try {
+      console.log("Updating photo locally on disk via local CMS API. ID:", editForm.id);
       const response = await fetch('/api/local-update', {
         method: 'POST',
         headers: {
@@ -285,24 +400,47 @@ export function AdminDashboardPage() {
 
       if (!response.ok) {
         const errData = await response.json()
-        throw new Error(errData.error || 'Update failed')
+        throw new Error(errData.error || 'Local update failed')
       }
+
+      const current = getLocalPhotos()
+      const updated = current.map((p) => {
+        if (p.id === editForm.id) {
+          return {
+            ...p,
+            title: editForm.title,
+            category: editForm.category,
+            location: editForm.location,
+            camera: editForm.camera,
+            lens: editForm.lens,
+            date: editForm.date,
+            aspect: editForm.aspect,
+            featured: editForm.featured,
+            alt: editForm.alt || editForm.title,
+            description: editForm.description,
+          }
+        }
+        return p
+      })
+
+      saveLocalPhotos(updated)
+      setPhotos(updated)
 
       setEditingPhotoId(null)
       setEditForm(null)
-      triggerNotification('Photograph details updated locally.')
+      triggerNotification('Photograph details updated locally on disk.')
       window.dispatchEvent(new Event('gallery_updated'))
     } catch (err: any) {
+      console.error('[Save Edit Error]', err)
       alert(`Edit Failed: ${err.message}`)
     }
   }
 
-  // --- REORDER PHOTOS (LOCAL CMS) ---
-  const handleMovePhoto = async (index: number, direction: 'up' | 'down') => {
-    if (!import.meta.env.DEV) {
-      alert('Read-Only Mode: Reordering photos is disabled on the live site. Please run the project locally.')
-      return
-    }
+  // --- REORDER PHOTOS ---
+  const handleMovePhoto = async (photoId: string, direction: 'up' | 'down') => {
+    console.log("handleMovePhoto triggered for ID:", photoId, "direction:", direction);
+    const index = photos.findIndex(p => p.id === photoId)
+    if (index === -1) return
     const newIndex = direction === 'up' ? index - 1 : index + 1
     if (newIndex < 0 || newIndex >= photos.length) return
 
@@ -311,6 +449,7 @@ export function AdminDashboardPage() {
     updatedPhotos.splice(newIndex, 0, movedPhoto)
 
     setPhotos(updatedPhotos)
+    saveLocalPhotos(updatedPhotos)
 
     try {
       const response = await fetch('/api/local-reorder', {
@@ -325,34 +464,41 @@ export function AdminDashboardPage() {
 
       if (!response.ok) {
         const errData = await response.json()
-        throw new Error(errData.error || 'Reordering failed')
+        throw new Error(errData.error || 'Local reordering failed')
       }
 
-      triggerNotification('Gallery order updated.')
+      triggerNotification('Gallery order updated locally on disk.')
       window.dispatchEvent(new Event('gallery_updated'))
     } catch (err: any) {
+      console.error('[Reorder Error]', err)
       alert(`Reordering Failed: ${err.message}`)
     }
   }
 
-  // --- SAVE SYSTEM SETTINGS ---
-  const handleSaveSettings = (e: React.FormEvent) => {
-    e.preventDefault()
-    dbSaveSettings(settingsForm)
-    triggerNotification('Configuration parameters synchronized.')
-  }
-
-  const handleSaveJson = () => {
-    if (!import.meta.env.DEV) {
-      alert('Read-Only Mode: Committing raw JSON cache updates is disabled on the live site. Please run the project locally.')
-      return
-    }
+  // --- SAVE JSON ---
+  const handleSaveJson = async () => {
+    console.log("handleSaveJson triggered");
     setJsonError(null)
     try {
       const parsed = JSON.parse(jsonText)
       if (!Array.isArray(parsed)) {
         throw new Error('Root element must be a JSON Array of Photos.')
       }
+
+      // Write to disk
+      const response = await fetch('/api/local-gallery', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(parsed)
+      })
+
+      if (!response.ok) {
+        const errData = await response.json()
+        throw new Error(errData.error || 'Failed to save JSON to disk')
+      }
+
       saveLocalPhotos(parsed)
       setPhotos(parsed)
       window.dispatchEvent(new Event('gallery_updated'))
@@ -360,6 +506,13 @@ export function AdminDashboardPage() {
     } catch (err: any) {
       setJsonError(err?.message || 'Invalid JSON syntax.')
     }
+  }
+
+  // --- SAVE SYSTEM SETTINGS ---
+  const handleSaveSettings = (e: React.FormEvent) => {
+    e.preventDefault()
+    dbSaveSettings(settingsForm)
+    triggerNotification('Configuration parameters saved successfully.')
   }
 
   const handleDeleteInquiry = (id: string) => {
@@ -408,19 +561,10 @@ export function AdminDashboardPage() {
       </AnimatePresence>
 
       <main className="max-w-7xl mx-auto px-6 md:px-12 mt-10 relative z-10">
-        {!import.meta.env.DEV && (
-          <div className="mb-8 p-5 border border-amber-500/20 bg-amber-500/5 text-amber-300 text-xs tracking-wider uppercase rounded-sm flex items-start sm:items-center gap-3">
-            <span className="h-2.5 w-2.5 rounded-full bg-amber-500 animate-pulse flex-shrink-0 mt-1 sm:mt-0" />
-            <p className="leading-relaxed font-body font-semibold">
-              Read-Only Mode: Local CMS operations (uploading, editing, deleting, reordering) are only active during local development. Operations are disabled here.
-            </p>
-          </div>
-        )}
         <div className="flex border-b border-white/10 gap-8 mb-10 overflow-x-auto pb-1 scrollbar-thin">
           {[
-            { id: 'gallery', label: 'Gallery Manager' },
             { id: 'settings', label: 'Settings' },
-            { id: 'json', label: 'Raw JSON View' },
+            { id: 'gallery', label: 'Photo Library' },
             { id: 'inquiries', label: `Inquiries Inbox (${inquiries.length})` },
           ].map((tab) => (
             <button
@@ -444,417 +588,488 @@ export function AdminDashboardPage() {
 
         <AnimatePresence mode="wait">
           {activeTab === 'gallery' && (
-            <motion.div
-              key="gallery-tab"
-              initial={{ opacity: 0, y: 15 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -15 }}
-              transition={{ duration: 0.4 }}
-              className="grid grid-cols-1 lg:grid-cols-3 gap-10"
-            >
-              <div className="lg:col-span-1 border border-white/10 p-6 md:p-8 bg-charcoal-light/20 backdrop-blur-sm rounded-sm">
-                <span className="font-body text-[10px] tracking-[0.3em] text-gold uppercase block mb-2">
-                  Local direct upload
-                </span>
-                <h3 className="font-display text-xl text-cream uppercase mb-6">
-                  Upload Photo File
-                </h3>
+            <PhotoLibraryErrorBoundary>
+              <motion.div
+                key="gallery-tab"
+                initial={{ opacity: 0, y: 15 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -15 }}
+                transition={{ duration: 0.4 }}
+                className="grid grid-cols-1 lg:grid-cols-3 gap-10"
+              >
+                <div className="lg:col-span-1 border border-white/10 p-6 md:p-8 bg-charcoal-light/20 backdrop-blur-sm rounded-sm">
+                  <span className="font-body text-[10px] tracking-[0.3em] text-gold uppercase block mb-2">
+                    Upload Photograph
+                  </span>
+                  <h3 className="font-display text-xl text-cream uppercase mb-6">
+                    Upload Photo File
+                  </h3>
 
-                <form onSubmit={handleAddPhoto} className="space-y-5">
-                  <div className="space-y-2 border border-dashed border-white/10 p-4 bg-black/10 rounded-sm">
-                    <label className="block font-body text-[10px] tracking-widest text-cream-muted uppercase cursor-pointer">
-                      Select File from Laptop
-                    </label>
-                    <input
-                      type="file"
-                      id="photo-file-input"
-                      required
-                      accept="image/*"
-                      onChange={(e) => {
-                        const file = e.target.files ? e.target.files[0] : null
-                        setSelectedFile(file)
-                      }}
-                      className="w-full text-xs text-cream-muted file:bg-gold file:text-charcoal file:border-none file:px-4 file:py-2 file:text-[10px] file:font-bold file:uppercase file:tracking-wider file:cursor-pointer hover:file:bg-gold-soft cursor-pointer"
-                    />
-                    {selectedFile && (
-                      <p className="text-[10px] text-gold font-body tracking-wider uppercase mt-1">
-                        File Selected: {selectedFile.name} ({(selectedFile.size / 1024 / 1024).toFixed(2)} MB)
-                      </p>
-                    )}
-                  </div>
-
-                  <div className="space-y-1">
-                    <label className="block font-body text-[10px] tracking-widest text-cream-muted uppercase">
-                      Title *
-                    </label>
-                    <input
-                      type="text"
-                      required
-                      value={newPhoto.title}
-                      onChange={(e) => setNewPhoto({ ...newPhoto, title: e.target.value })}
-                      placeholder="e.g. Quiet Gaze"
-                      className="w-full bg-charcoal border border-white/10 p-3 text-sm text-cream focus:outline-none focus:border-gold/45 rounded-sm"
-                    />
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-1">
-                      <label className="block font-body text-[10px] tracking-widest text-cream-muted uppercase">
-                        Category
+                  <form onSubmit={handleAddPhoto} className="space-y-5">
+                    <div className="space-y-2 border border-dashed border-white/10 p-4 bg-black/10 rounded-sm">
+                      <label className="block font-body text-[10px] tracking-widest text-cream-muted uppercase cursor-pointer">
+                        Select File
                       </label>
-                      <select
-                        value={newPhoto.category}
-                        onChange={(e) => setNewPhoto({ ...newPhoto, category: e.target.value as PhotoCategory })}
-                        className="w-full bg-charcoal border border-white/10 p-3 text-sm text-cream focus:outline-none focus:border-gold/45 rounded-sm"
-                      >
-                        {['Portraits', 'Street', 'Nature', 'Monochrome', 'Cinematic', 'Travel'].map((cat) => (
-                          <option key={cat} value={cat}>
-                            {cat}
-                          </option>
-                        ))}
-                      </select>
+                      <input
+                        type="file"
+                        id="photo-file-input"
+                        required
+                        accept="image/*"
+                        onChange={(e) => {
+                          const file = e.target.files ? e.target.files[0] : null
+                          setSelectedFile(file)
+                        }}
+                        className="w-full text-xs text-cream-muted file:bg-gold file:text-charcoal file:border-none file:px-4 file:py-2 file:text-[10px] file:font-bold file:uppercase file:tracking-wider file:cursor-pointer hover:file:bg-gold-soft cursor-pointer"
+                      />
+                      {selectedFile && (
+                        <p className="text-[10px] text-gold font-body tracking-wider uppercase mt-1">
+                          File Selected: {selectedFile.name} ({(selectedFile.size / 1024 / 1024).toFixed(2)} MB)
+                        </p>
+                      )}
                     </div>
 
                     <div className="space-y-1">
                       <label className="block font-body text-[10px] tracking-widest text-cream-muted uppercase">
-                        Aspect Ratio
-                      </label>
-                      <select
-                        value={newPhoto.aspect}
-                        onChange={(e) => setNewPhoto({ ...newPhoto, aspect: e.target.value as any })}
-                        className="w-full bg-charcoal border border-white/10 p-3 text-sm text-cream focus:outline-none focus:border-gold/45 rounded-sm"
-                      >
-                        <option value="wide">Wide (Landscape)</option>
-                        <option value="tall">Tall (Portrait)</option>
-                        <option value="square">Square</option>
-                      </select>
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-1">
-                      <label className="block font-body text-[10px] tracking-widest text-cream-muted uppercase">
-                        Location
+                        Title *
                       </label>
                       <input
                         type="text"
-                        value={newPhoto.location}
-                        onChange={(e) => setNewPhoto({ ...newPhoto, location: e.target.value })}
-                        placeholder="Paris, France"
+                        required
+                        value={newPhoto.title}
+                        onChange={(e) => setNewPhoto({ ...newPhoto, title: e.target.value })}
+                        placeholder="e.g. Quiet Gaze"
+                        className="w-full bg-charcoal border border-white/10 p-3 text-sm text-cream focus:outline-none focus:border-gold/45 rounded-sm"
+                      />
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="space-y-1">
+                        <label className="block font-body text-[10px] tracking-widest text-cream-muted uppercase">
+                          Category
+                        </label>
+                        <select
+                          value={newPhoto.category}
+                          onChange={(e) => setNewPhoto({ ...newPhoto, category: e.target.value as PhotoCategory })}
+                          className="w-full bg-charcoal border border-white/10 p-3 text-sm text-cream focus:outline-none focus:border-gold/45 rounded-sm"
+                        >
+                          {['Portraits', 'Street', 'Nature', 'Monochrome', 'Cinematic', 'Travel'].map((cat) => (
+                            <option key={cat} value={cat}>
+                              {cat}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div className="space-y-1">
+                        <label className="block font-body text-[10px] tracking-widest text-cream-muted uppercase">
+                          Aspect Ratio
+                        </label>
+                        <select
+                          value={newPhoto.aspect}
+                          onChange={(e) => setNewPhoto({ ...newPhoto, aspect: e.target.value as any })}
+                          className="w-full bg-charcoal border border-white/10 p-3 text-sm text-cream focus:outline-none focus:border-gold/45 rounded-sm"
+                        >
+                          <option value="wide">Wide (Landscape)</option>
+                          <option value="tall">Tall (Portrait)</option>
+                          <option value="square">Square</option>
+                        </select>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="space-y-1">
+                        <label className="block font-body text-[10px] tracking-widest text-cream-muted uppercase">
+                          Location
+                        </label>
+                        <input
+                          type="text"
+                          value={newPhoto.location}
+                          onChange={(e) => setNewPhoto({ ...newPhoto, location: e.target.value })}
+                          placeholder="Paris, France"
+                          className="w-full bg-charcoal border border-white/10 p-3 text-sm text-cream focus:outline-none focus:border-gold/45 rounded-sm"
+                        />
+                      </div>
+
+                      <div className="space-y-1">
+                        <label className="block font-body text-[10px] tracking-widest text-cream-muted uppercase">
+                          Date / Era
+                        </label>
+                        <input
+                          type="text"
+                          value={newPhoto.date}
+                          onChange={(e) => setNewPhoto({ ...newPhoto, date: e.target.value })}
+                          placeholder="March 2025"
+                          className="w-full bg-charcoal border border-white/10 p-3 text-sm text-cream focus:outline-none focus:border-gold/45 rounded-sm"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="block font-body text-[10px] tracking-widest text-cream-muted uppercase">
+                        Camera Body & Lens Info
+                      </label>
+                      <input
+                        type="text"
+                        value={newPhoto.camera}
+                        onChange={(e) => setNewPhoto({ ...newPhoto, camera: e.target.value })}
+                        placeholder="Sony A7IV · 85mm f/1.4"
                         className="w-full bg-charcoal border border-white/10 p-3 text-sm text-cream focus:outline-none focus:border-gold/45 rounded-sm"
                       />
                     </div>
 
                     <div className="space-y-1">
                       <label className="block font-body text-[10px] tracking-widest text-cream-muted uppercase">
-                        Date / Era
+                        Atmospheric Narrative
                       </label>
-                      <input
-                        type="text"
-                        value={newPhoto.date}
-                        onChange={(e) => setNewPhoto({ ...newPhoto, date: e.target.value })}
-                        placeholder="March 2025"
-                        className="w-full bg-charcoal border border-white/10 p-3 text-sm text-cream focus:outline-none focus:border-gold/45 rounded-sm"
+                      <textarea
+                        value={newPhoto.description}
+                        onChange={(e) => setNewPhoto({ ...newPhoto, description: e.target.value })}
+                        placeholder="A short poetry line or caption..."
+                        rows={2}
+                        className="w-full bg-charcoal border border-white/10 p-3 text-sm text-cream focus:outline-none focus:border-gold/45 resize-none rounded-sm"
                       />
                     </div>
-                  </div>
 
-                  <div className="space-y-1">
-                    <label className="block font-body text-[10px] tracking-widest text-cream-muted uppercase">
-                      Camera Body & Lens Info
-                    </label>
-                    <input
-                      type="text"
-                      value={newPhoto.camera}
-                      onChange={(e) => setNewPhoto({ ...newPhoto, camera: e.target.value })}
-                      placeholder="Sony A7IV · 85mm f/1.4"
-                      className="w-full bg-charcoal border border-white/10 p-3 text-sm text-cream focus:outline-none focus:border-gold/45 rounded-sm"
-                    />
-                  </div>
-
-                  <div className="space-y-1">
-                    <label className="block font-body text-[10px] tracking-widest text-cream-muted uppercase">
-                      Atmospheric Narrative
-                    </label>
-                    <textarea
-                      value={newPhoto.description}
-                      onChange={(e) => setNewPhoto({ ...newPhoto, description: e.target.value })}
-                      placeholder="A short poetry line or caption..."
-                      rows={2}
-                      className="w-full bg-charcoal border border-white/10 p-3 text-sm text-cream focus:outline-none focus:border-gold/45 resize-none rounded-sm"
-                    />
-                  </div>
-
-                  <div className="flex items-center gap-3 pt-2">
-                    <input
-                      type="checkbox"
-                      id="featured"
-                      checked={newPhoto.featured}
-                      onChange={(e) => setNewPhoto({ ...newPhoto, featured: e.target.checked })}
-                      className="accent-gold h-4 w-4 bg-charcoal border-white/15"
-                    />
-                    <label htmlFor="featured" className="font-body text-xs text-cream-muted uppercase tracking-wider select-none">
-                      Mark as Featured (Hero Loop)
-                    </label>
-                  </div>
-
-                  {uploadStatus === 'uploading' && (
-                    <div className="py-2 flex items-center justify-center gap-3">
-                      <span className="animate-spin text-gold font-bold text-xs">⟳</span>
-                      <p className="text-[10px] text-gold tracking-widest uppercase font-semibold">
-                        Saving image and updating entries...
-                      </p>
+                    <div className="flex items-center gap-3 pt-2">
+                      <input
+                        type="checkbox"
+                        id="featured"
+                        checked={newPhoto.featured}
+                        onChange={(e) => setNewPhoto({ ...newPhoto, featured: e.target.checked })}
+                        className="accent-gold h-4 w-4 bg-charcoal border-white/15"
+                      />
+                      <label htmlFor="featured" className="font-body text-xs text-cream-muted uppercase tracking-wider select-none">
+                        Mark as Featured (Hero Loop)
+                      </label>
                     </div>
-                  )}
 
-                  {uploadStatus === 'error' && uploadError && (
-                    <div className="p-3 border border-red-500/20 bg-red-500/5 text-red-400 text-xs font-body font-mono">
-                      Upload Error: {uploadError}
-                    </div>
-                  )}
-
-                  <button
-                    type="submit"
-                    disabled={uploadStatus === 'uploading'}
-                    className="w-full bg-gold hover:bg-gold-soft text-charcoal font-bold py-3.5 px-4 text-xs tracking-widest uppercase transition-all rounded-sm shadow-md hover:shadow-[0_0_20px_rgba(201,169,98,0.2)] mt-4 disabled:opacity-50"
-                  >
-                    Upload File to Gallery
-                  </button>
-                </form>
-              </div>
-
-              <div className="lg:col-span-2 space-y-6">
-                <div className="border border-white/10 p-6 md:p-8 bg-charcoal-light/10 backdrop-blur-sm rounded-sm">
-                  <div className="flex justify-between items-center mb-6">
-                    <div>
-                      <h3 className="font-display text-xl text-cream uppercase">Photographs Directory</h3>
-                      <p className="text-cream-muted text-xs font-body mt-1">
-                        Photographs archive — displaying {photos.length} items.
-                      </p>
-                    </div>
-                  </div>
-
-                  <AnimatePresence>
-                    {editingPhotoId && editForm && (
-                      <motion.div
-                        initial={{ opacity: 0, height: 0 }}
-                        animate={{ opacity: 1, height: 'auto' }}
-                        exit={{ opacity: 0, height: 0 }}
-                        className="border border-gold/30 bg-gold/5 p-6 mb-6 rounded-sm space-y-4"
-                      >
-                        <h4 className="font-display text-sm text-gold tracking-widest uppercase mb-4">
-                          Edit Photo Details
-                        </h4>
-                        <form onSubmit={handleSaveEdit} className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                          <div className="space-y-1">
-                            <label className="block text-[9px] tracking-wider text-cream-muted uppercase">Title</label>
-                            <input
-                              type="text"
-                              required
-                              value={editForm.title}
-                              onChange={(e) => setEditForm({ ...editForm, title: e.target.value })}
-                              className="w-full bg-charcoal border border-white/10 p-2 text-xs text-cream focus:outline-none"
-                            />
-                          </div>
-
-                          <div className="grid grid-cols-2 gap-2">
-                            <div className="space-y-1">
-                              <label className="block text-[9px] tracking-wider text-cream-muted uppercase">Category</label>
-                              <select
-                                value={editForm.category}
-                                onChange={(e) => setEditForm({ ...editForm, category: e.target.value as PhotoCategory })}
-                                className="w-full bg-charcoal border border-white/10 p-2 text-xs text-cream focus:outline-none"
-                              >
-                                {['Portraits', 'Street', 'Nature', 'Monochrome', 'Cinematic', 'Travel'].map((c) => (
-                                  <option key={c} value={c}>
-                                    {c}
-                                  </option>
-                                ))}
-                              </select>
-                            </div>
-                            <div className="space-y-1">
-                              <label className="block text-[9px] tracking-wider text-cream-muted uppercase">Aspect</label>
-                              <select
-                                value={editForm.aspect}
-                                onChange={(e) => setEditForm({ ...editForm, aspect: e.target.value as any })}
-                                className="w-full bg-charcoal border border-white/10 p-2 text-xs text-cream focus:outline-none"
-                              >
-                                <option value="wide">Wide</option>
-                                <option value="tall">Tall</option>
-                                <option value="square">Square</option>
-                              </select>
-                            </div>
-                          </div>
-
-                          <div className="grid grid-cols-2 gap-2">
-                            <div className="space-y-1">
-                              <label className="block text-[9px] tracking-wider text-cream-muted uppercase">Location</label>
-                              <input
-                                type="text"
-                                value={editForm.location}
-                                onChange={(e) => setEditForm({ ...editForm, location: e.target.value })}
-                                className="w-full bg-charcoal border border-white/10 p-2 text-xs text-cream focus:outline-none"
-                              />
-                            </div>
-                            <div className="space-y-1">
-                              <label className="block text-[9px] tracking-wider text-cream-muted uppercase">Date</label>
-                              <input
-                                type="text"
-                                value={editForm.date}
-                                onChange={(e) => setEditForm({ ...editForm, date: e.target.value })}
-                                className="w-full bg-charcoal border border-white/10 p-2 text-xs text-cream focus:outline-none"
-                              />
-                            </div>
-                          </div>
-
-                          <div className="space-y-1">
-                            <label className="block text-[9px] tracking-wider text-cream-muted uppercase">Camera & Lens</label>
-                            <input
-                              type="text"
-                              value={editForm.camera}
-                              onChange={(e) => setEditForm({ ...editForm, camera: e.target.value })}
-                              className="w-full bg-charcoal border border-white/10 p-2 text-xs text-cream focus:outline-none"
-                            />
-                          </div>
-
-                          <div className="md:col-span-2 space-y-1">
-                            <label className="block text-[9px] tracking-wider text-cream-muted uppercase">Atmospheric Caption</label>
-                            <textarea
-                              value={editForm.description}
-                              onChange={(e) => setEditForm({ ...editForm, description: e.target.value })}
-                              rows={2}
-                              className="w-full bg-charcoal border border-white/10 p-2 text-xs text-cream focus:outline-none resize-none"
-                            />
-                          </div>
-
-                          <div className="md:col-span-2 flex justify-between items-center pt-2">
-                            <label className="flex items-center gap-2 cursor-pointer select-none">
-                              <input
-                                type="checkbox"
-                                checked={editForm.featured}
-                                onChange={(e) => setEditForm({ ...editForm, featured: e.target.checked })}
-                                className="accent-gold h-4 w-4"
-                              />
-                              <span className="text-[10px] text-cream-muted uppercase tracking-wider">
-                                Featured In Hero
-                              </span>
-                            </label>
-
-                            <div className="flex gap-3">
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setEditingPhotoId(null)
-                                  setEditForm(null)
-                                }}
-                                className="px-4 py-2 border border-white/10 text-cream-muted hover:text-cream text-[10px] tracking-widest uppercase font-semibold"
-                              >
-                                Cancel
-                              </button>
-                              <button
-                                type="submit"
-                                className="px-5 py-2 bg-gold hover:bg-gold-soft text-charcoal text-[10px] tracking-widest uppercase font-bold"
-                              >
-                                Save Changes
-                              </button>
-                            </div>
-                          </div>
-                        </form>
-                      </motion.div>
+                    {uploadStatus === 'uploading' && (
+                      <div className="py-2 flex items-center justify-center gap-3">
+                        <span className="animate-spin text-gold font-bold text-xs">⟳</span>
+                        <p className="text-[10px] text-gold tracking-widest uppercase font-semibold">
+                          Saving image and updating entries...
+                        </p>
+                      </div>
                     )}
-                  </AnimatePresence>
 
-                  <div className="space-y-4 max-h-[70vh] overflow-y-auto pr-2 scrollbar-thin">
-                    {photos.length === 0 ? (
-                      <p className="text-cream-muted text-sm italic font-body py-8 text-center">
-                        Archive is empty. Upload files from your laptop to begin.
-                      </p>
-                    ) : (
-                      photos.map((p, idx) => {
-                        const isLocalAsset = p.src.startsWith('/assets/')
-                        return (
-                          <div
-                            key={p.id}
-                            className="flex flex-col sm:flex-row items-start sm:items-center justify-between border border-white/5 bg-charcoal/40 p-4 hover:border-gold/15 transition-all gap-4"
-                          >
-                            <div className="flex items-center gap-4">
-                              <img
-                                src={p.src}
-                                alt={p.title}
-                                className="w-14 h-14 object-cover border border-white/10 rounded-sm"
-                                onError={(e) => {
-                                  (e.target as HTMLImageElement).src =
-                                    'https://images.unsplash.com/photo-1478720568477-152d9b164e26?w=200&q=80'
-                                }}
+                    {uploadStatus === 'error' && uploadError && (
+                      <div className="p-3 border border-red-500/20 bg-red-500/5 text-red-400 text-xs font-body font-mono">
+                        Upload Error: {uploadError}
+                      </div>
+                    )}
+
+                    <button
+                      type="submit"
+                      disabled={uploadStatus === 'uploading'}
+                      className="w-full bg-gold hover:bg-gold-soft text-charcoal font-bold py-3.5 px-4 text-xs tracking-widest uppercase transition-all rounded-sm shadow-md hover:shadow-[0_0_20px_rgba(201,169,98,0.2)] mt-4 disabled:opacity-50"
+                    >
+                      Upload File to Gallery
+                    </button>
+                  </form>
+                </div>
+
+                <div className="lg:col-span-2 space-y-6">
+                  <div className="border border-white/10 p-6 md:p-8 bg-charcoal-light/10 backdrop-blur-sm rounded-sm">
+                    <div className="flex justify-between items-center mb-6">
+                      <div>
+                        <h3 className="font-display text-xl text-cream uppercase">Photographs Directory</h3>
+                        <p className="text-cream-muted text-xs font-body mt-1">
+                          Photographs archive — displaying {Array.isArray(photos) ? photos.length : 0} items.
+                        </p>
+                      </div>
+                    </div>
+                    <div className="p-4 border border-gold/15 bg-gold/5 text-gold text-xs font-body rounded-sm mb-6 flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+                      <div>
+                        <span className="font-semibold block uppercase tracking-wider">ⓘ Git-Based Photography Database</span>
+                        <span className="text-[10px] text-cream-muted font-normal mt-0.5 block">Changes are saved locally and go live upon git commit & push.</span>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-3">
+                        <button
+                          type="button"
+                          onClick={handleExportJson}
+                          className="px-3 py-1.5 bg-gold hover:bg-gold-soft text-charcoal text-[9px] font-bold tracking-widest uppercase rounded-sm transition-all"
+                        >
+                          Backup / Export
+                        </button>
+                        <label className="px-3 py-1.5 border border-white/10 hover:border-gold/30 hover:text-gold text-[9px] font-bold tracking-widest uppercase rounded-sm cursor-pointer transition-colors">
+                          Import JSON
+                          <input
+                            type="file"
+                            accept=".json"
+                            onChange={handleImportJson}
+                            className="hidden"
+                          />
+                        </label>
+                      </div>
+                    </div>
+
+                    <AnimatePresence>
+                      {editingPhotoId && editForm && (
+                        <motion.div
+                          initial={{ opacity: 0, height: 0 }}
+                          animate={{ opacity: 1, height: 'auto' }}
+                          exit={{ opacity: 0, height: 0 }}
+                          className="border border-gold/30 bg-gold/5 p-6 mb-6 rounded-sm space-y-4"
+                        >
+                          <h4 className="font-display text-sm text-gold tracking-widest uppercase mb-4">
+                            Edit Photo Details
+                          </h4>
+                          <form onSubmit={handleSaveEdit} className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div className="space-y-1">
+                              <label className="block text-[9px] tracking-wider text-cream-muted uppercase">Title</label>
+                              <input
+                                type="text"
+                                required
+                                value={editForm.title}
+                                onChange={(e) => setEditForm({ ...editForm, title: e.target.value })}
+                                className="w-full bg-charcoal border border-white/10 p-2 text-xs text-cream focus:outline-none"
                               />
-                              <div>
-                                <div className="flex items-center gap-2">
-                                  <h4 className="font-heading text-sm text-cream font-medium">{p.title}</h4>
-                                  <span className={`text-[8px] font-semibold tracking-wider px-1.5 py-0.5 rounded-sm uppercase ${
-                                    isLocalAsset ? 'border border-gold/30 text-gold bg-gold/5' : 'border border-white/10 text-cream-muted'
-                                  }`}>
-                                    {isLocalAsset ? 'Local Photo' : 'Pre-seeded'}
-                                  </span>
-                                </div>
-                                <p className="font-body text-[10px] text-cream-muted uppercase tracking-wider mt-1">
-                                  {p.category} · {p.location || 'No Location'} · {p.aspect}
-                                </p>
+                            </div>
+
+                            <div className="grid grid-cols-2 gap-2">
+                              <div className="space-y-1">
+                                <label className="block text-[9px] tracking-wider text-cream-muted uppercase">Category</label>
+                                <select
+                                  value={editForm.category}
+                                  onChange={(e) => setEditForm({ ...editForm, category: e.target.value as PhotoCategory })}
+                                  className="w-full bg-charcoal border border-white/10 p-2 text-xs text-cream focus:outline-none"
+                                >
+                                  {['Portraits', 'Street', 'Nature', 'Monochrome', 'Cinematic', 'Travel'].map((c) => (
+                                    <option key={c} value={c}>
+                                      {c}
+                                    </option>
+                                  ))}
+                                </select>
+                              </div>
+                              <div className="space-y-1">
+                                <label className="block text-[9px] tracking-wider text-cream-muted uppercase">Aspect</label>
+                                <select
+                                  value={editForm.aspect}
+                                  onChange={(e) => setEditForm({ ...editForm, aspect: e.target.value as any })}
+                                  className="w-full bg-charcoal border border-white/10 p-2 text-xs text-cream focus:outline-none"
+                                >
+                                  <option value="wide">Wide</option>
+                                  <option value="tall">Tall</option>
+                                  <option value="square">Square</option>
+                                </select>
                               </div>
                             </div>
 
-                            <div className="flex items-center gap-3 w-full sm:w-auto justify-end">
-                              {/* Reordering Carets */}
-                              <div className="flex items-center gap-1">
-                                <button
-                                  type="button"
-                                  onClick={() => handleMovePhoto(idx, 'up')}
-                                  disabled={idx === 0}
-                                  className="p-1.5 border border-white/10 text-cream-muted hover:text-gold disabled:opacity-20 hover:border-gold/20 transition-all rounded-sm"
-                                  title="Move Up"
-                                >
-                                  ▲
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => handleMovePhoto(idx, 'down')}
-                                  disabled={idx === photos.length - 1}
-                                  className="p-1.5 border border-white/10 text-cream-muted hover:text-gold disabled:opacity-20 hover:border-gold/20 transition-all rounded-sm"
-                                  title="Move Down"
-                                >
-                                  ▼
-                                </button>
+                            <div className="grid grid-cols-2 gap-2">
+                              <div className="space-y-1">
+                                <label className="block text-[9px] tracking-wider text-cream-muted uppercase">Location</label>
+                                <input
+                                  type="text"
+                                  value={editForm.location}
+                                  onChange={(e) => setEditForm({ ...editForm, location: e.target.value })}
+                                  className="w-full bg-charcoal border border-white/10 p-2 text-xs text-cream focus:outline-none"
+                                />
                               </div>
+                              <div className="space-y-1">
+                                <label className="block text-[9px] tracking-wider text-cream-muted uppercase">Date</label>
+                                <input
+                                  type="text"
+                                  value={editForm.date}
+                                  onChange={(e) => setEditForm({ ...editForm, date: e.target.value })}
+                                  className="w-full bg-charcoal border border-white/10 p-2 text-xs text-cream focus:outline-none"
+                                />
+                              </div>
+                            </div>
 
-                              <button
-                                type="button"
-                                onClick={() => startEditing(p)}
-                                className="px-3 py-1.5 text-[10px] tracking-widest uppercase border border-white/10 text-cream-muted hover:border-gold/30 hover:text-gold transition-colors rounded-sm"
-                              >
-                                Edit
-                              </button>
+                            <div className="space-y-1">
+                              <label className="block text-[9px] tracking-wider text-cream-muted uppercase">Camera & Lens</label>
+                              <input
+                                type="text"
+                                value={editForm.camera}
+                                onChange={(e) => setEditForm({ ...editForm, camera: e.target.value })}
+                                className="w-full bg-charcoal border border-white/10 p-2 text-xs text-cream focus:outline-none"
+                              />
+                            </div>
 
-                              {p.featured && (
-                                <span className="px-2 py-1 text-[8px] bg-gold/10 border border-gold/30 text-gold font-bold uppercase tracking-wider rounded-sm">
-                                  Hero Loop
+                            <div className="md:col-span-2 space-y-1">
+                              <label className="block text-[9px] tracking-wider text-cream-muted uppercase">Atmospheric Caption</label>
+                              <textarea
+                                value={editForm.description}
+                                onChange={(e) => setEditForm({ ...editForm, description: e.target.value })}
+                                rows={2}
+                                className="w-full bg-charcoal border border-white/15 p-2 text-xs text-cream focus:outline-none resize-none"
+                              />
+                            </div>
+
+                            <div className="md:col-span-2 flex justify-between items-center pt-2">
+                              <label className="flex items-center gap-2 cursor-pointer select-none">
+                                <input
+                                  type="checkbox"
+                                  checked={editForm.featured}
+                                  onChange={(e) => setEditForm({ ...editForm, featured: e.target.checked })}
+                                  className="accent-gold h-4 w-4"
+                                />
+                                <span className="text-[10px] text-cream-muted uppercase tracking-wider">
+                                  Featured In Hero
                                 </span>
-                              )}
+                              </label>
 
-                              <button
-                                type="button"
-                                onClick={() => handleDeletePhoto(p)}
-                                className="px-3 py-1.5 text-[10px] tracking-widest uppercase border border-red-500/10 text-red-400/80 hover:bg-red-500/10 hover:border-red-500/50 transition-colors rounded-sm"
-                              >
-                                Remove
-                              </button>
+                              <div className="flex gap-3">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setEditingPhotoId(null)
+                                    setEditForm(null)
+                                  }}
+                                  className="px-4 py-2 border border-white/10 text-cream-muted hover:text-cream text-[10px] tracking-widest uppercase font-semibold"
+                                >
+                                  Cancel
+                                </button>
+                                <button
+                                  type="submit"
+                                  className="px-5 py-2 bg-gold hover:bg-gold-soft text-charcoal text-[10px] tracking-widest uppercase font-bold"
+                                >
+                                  Save Changes
+                                </button>
+                              </div>
                             </div>
-                          </div>
-                        )
-                      })
+                          </form>
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+
+                    {/* SEARCH INPUT BAR */}
+                    <div className="mb-6">
+                      <input
+                        type="text"
+                        placeholder="Search photos by title, category, location, camera, date, description..."
+                        value={searchQuery}
+                        onChange={(e) => setSearchQuery(e.target.value)}
+                        className="w-full bg-charcoal border border-white/10 p-3 text-xs text-cream focus:outline-none focus:border-gold/45 rounded-sm placeholder-white/20"
+                      />
+                    </div>
+
+                    <div className="space-y-4 max-h-[70vh] overflow-y-auto pr-2 scrollbar-thin">
+                      {!Array.isArray(photos) || photos.length === 0 ? (
+                        <p className="text-cream-muted text-sm italic font-body py-8 text-center">
+                          Archive is empty. Upload files to begin.
+                        </p>
+                      ) : (
+                        (() => {
+                          const filtered = photos.filter(p => {
+                            const q = searchQuery.toLowerCase()
+                            return (
+                              p.title.toLowerCase().includes(q) ||
+                              p.category.toLowerCase().includes(q) ||
+                              (p.location && p.location.toLowerCase().includes(q)) ||
+                              (p.camera && p.camera.toLowerCase().includes(q)) ||
+                              (p.date && p.date.toLowerCase().includes(q)) ||
+                              (p.description && p.description.toLowerCase().includes(q))
+                            )
+                          })
+
+                          if (filtered.length === 0) {
+                            return (
+                              <p className="text-cream-muted text-sm italic font-body py-8 text-center">
+                                No photographs match search criteria.
+                              </p>
+                            )
+                          }
+
+                          return filtered.map((p) => {
+                            const pUrl = (p as any)?.url || p?.src || (p as any)?.image || p?.displayUrl || ""
+                            const pId = (p as any)?.public_id || p?.id || ""
+                            const pTitle = p?.title || "Untitled"
+                            const pCategory = p?.category || "Cinematic"
+                            const pLocation = p?.location || "No Location"
+                            const pAspect = p?.aspect || "wide"
+                            const pFeatured = !!p?.featured
+                            
+                            const isLocalAsset = pUrl.startsWith('/assets/') || pUrl.startsWith('/images/')
+                            const fullIdx = photos.findIndex(item => item.id === pId)
+                            const isFirst = fullIdx === 0
+                            const isLast = fullIdx === photos.length - 1
+
+                            return (
+                              <div
+                                key={pId}
+                                className="flex flex-col sm:flex-row items-start sm:items-center justify-between border border-white/5 bg-charcoal/40 p-4 hover:border-gold/15 transition-all gap-4"
+                              >
+                                <div className="flex items-center gap-4">
+                                  <img
+                                    src={pUrl}
+                                    alt={pTitle}
+                                    className="w-14 h-14 object-cover border border-white/10 rounded-sm"
+                                    onError={(e) => {
+                                      (e.target as HTMLImageElement).src =
+                                        'https://images.unsplash.com/photo-1478720568477-152d9b164e26?w=200&q=80'
+                                    }}
+                                  />
+                                  <div>
+                                    <div className="flex items-center gap-2">
+                                      <h4 className="font-heading text-sm text-cream font-medium">{pTitle}</h4>
+                                      <span className={`text-[8px] font-semibold tracking-wider px-1.5 py-0.5 rounded-sm uppercase ${
+                                        isLocalAsset ? 'border border-gold/30 text-gold bg-gold/5' : 'border border-white/10 text-cream-muted'
+                                      }`}>
+                                        {isLocalAsset ? 'Local Photo' : 'Pre-seeded'}
+                                      </span>
+                                    </div>
+                                    <p className="font-body text-[10px] text-cream-muted uppercase tracking-wider mt-1">
+                                      {pCategory} · {pLocation} · {pAspect}
+                                    </p>
+                                  </div>
+                                </div>
+
+                                <div className="flex items-center gap-3 w-full sm:w-auto justify-end">
+                                  {/* Reordering Carets */}
+                                  <div className="flex items-center gap-1">
+                                    <button
+                                      type="button"
+                                      onClick={() => handleMovePhoto(pId, 'up')}
+                                      disabled={isFirst}
+                                      className="p-1.5 border border-white/10 text-cream-muted hover:text-gold disabled:opacity-20 hover:border-gold/20 transition-all rounded-sm"
+                                      title="Move Up"
+                                    >
+                                      ▲
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleMovePhoto(pId, 'down')}
+                                      disabled={isLast}
+                                      className="p-1.5 border border-white/10 text-cream-muted hover:text-gold disabled:opacity-20 hover:border-gold/20 transition-all rounded-sm"
+                                      title="Move Down"
+                                    >
+                                      ▼
+                                    </button>
+                                  </div>
+
+                                <button
+                                  type="button"
+                                  onClick={() => startEditing(p)}
+                                  className="px-3 py-1.5 text-[10px] tracking-widest uppercase border border-white/10 text-cream-muted hover:border-gold/30 hover:text-gold transition-colors rounded-sm"
+                                >
+                                  Edit
+                                </button>
+
+                                {pFeatured && (
+                                  <span className="px-2 py-1 text-[8px] bg-gold/10 border border-gold/30 text-gold font-bold uppercase tracking-wider rounded-sm">
+                                    Hero Loop
+                                  </span>
+                                )}
+
+                                <button
+                                  type="button"
+                                  onClick={() => handleDeletePhoto(p)}
+                                  className="px-3 py-1.5 text-[10px] tracking-widest uppercase border border-red-500/10 text-red-400/80 hover:bg-red-500/10 hover:border-red-500/50 transition-colors rounded-sm"
+                                >
+                                  Remove
+                                </button>
+                              </div>
+                            </div>
+                          )
+                        })
+                      })()
                     )}
+                    </div>
                   </div>
                 </div>
-              </div>
-            </motion.div>
+              </motion.div>
+            </PhotoLibraryErrorBoundary>
           )}
 
           {activeTab === 'settings' && (
@@ -867,20 +1082,18 @@ export function AdminDashboardPage() {
               className="max-w-2xl mx-auto space-y-8"
             >
               <div className="border border-gold/20 p-6 md:p-10 bg-charcoal-light/10 backdrop-blur-sm rounded-sm">
-                {/* Local CMS Config Status */}
+                {/* Cloud CMS Config Status */}
                 <div className="border border-gold/20 p-6 bg-black/10 rounded-sm mb-6">
                   <span className="font-body text-[10px] tracking-[0.3em] text-gold uppercase block mb-2">
                     System Status
                   </span>
-                  <h3 className="font-display text-lg text-cream uppercase mb-3">Local Image CMS Mode Active</h3>
+                  <h3 className="font-display text-lg text-cream uppercase mb-3">Cloudinary CMS Active</h3>
                   <p className="font-body text-xs text-cream-muted leading-relaxed">
-                    The website is currently configured to use a <strong>100% Local Image System</strong>. 
-                    Images are uploaded directly from your laptop and saved to <code>src/assets/photos/</code>, 
-                    automatically updating <code>src/data/gallery.json</code> in real-time.
+                    The website is configured to run direct client-side CRUD synchronization with your Cloudinary media folders. Changes appear instantly for all global users.
                   </p>
                   <div className="mt-4 flex items-center gap-2">
                     <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
-                    <span className="font-body text-[9px] uppercase tracking-widest text-emerald-400 font-bold">Local API Active</span>
+                    <span className="font-body text-[9px] uppercase tracking-widest text-emerald-400 font-bold">Cloud Serverless Sync Active</span>
                   </div>
                 </div>
 
@@ -1018,7 +1231,7 @@ export function AdminDashboardPage() {
                     type="submit"
                     className="w-full bg-gold hover:bg-gold-soft text-charcoal font-bold py-4 px-4 text-xs tracking-widest uppercase transition-all rounded-sm shadow-md hover:shadow-[0_0_20px_rgba(201,169,98,0.2)] mt-6"
                   >
-                    Synchronize Configuration & Reload
+                    Save brand settings
                   </button>
                 </form>
               </div>

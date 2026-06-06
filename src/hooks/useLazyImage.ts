@@ -24,6 +24,10 @@ export function useLazyImage(src: string) {
   }, [])
 
   useEffect(() => {
+    setLoaded(false)
+  }, [src])
+
+  useEffect(() => {
     if (!inView) return
 
     const img = new Image()

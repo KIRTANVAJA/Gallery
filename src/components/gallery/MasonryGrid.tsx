@@ -17,7 +17,7 @@ export function MasonryGrid() {
   const { t } = useTranslation()
   const sentinelRef = useRef<HTMLDivElement>(null)
 
-  const { photos, loading, loadingMore, hasMore, loadMore } = useInfinitePhotos(
+  const { photos, loading, loadingMore, hasMore, loadMore, error } = useInfinitePhotos(
     category,
     searchParams,
   )
@@ -55,7 +55,16 @@ export function MasonryGrid() {
         </button>
       </div>
 
-      {loading ? (
+      {error ? (
+        <div className="text-center py-24 px-4 max-w-md mx-auto">
+          <p className="font-heading text-lg text-red-400 italic mb-4">
+            {error}
+          </p>
+          <p className="font-body text-xs text-cream-muted tracking-widest uppercase">
+            Check console logs for details
+          </p>
+        </div>
+      ) : loading ? (
         <div className="flex justify-center py-24">
           <motion.div
             className="h-px w-32 bg-gradient-to-r from-transparent via-gold to-transparent"

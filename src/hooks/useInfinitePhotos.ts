@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { GalleryCategory, Photo } from '../types/photo'
-import galleryData from '../data/gallery.json'
+import { getDynamicPhotos } from '../utils/localDB'
 
 export interface SearchParams {
   q?: string
@@ -18,31 +18,36 @@ export function useInfinitePhotos(
   const [hasMore, setHasMore] = useState(true)
   const [loading, setLoading] = useState(true)
   const [loadingMore, setLoadingMore] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
-  // 1. Load Photos from local gallery.json
+  // 1. Load Photos from localDB (asynchronously)
   useEffect(() => {
-    setLoading(true)
-    const mapped: Photo[] = (galleryData as any[]).map((item) => ({
-      id: String(item.id),
-      title: item.title,
-      category: item.category,
-      src: item.image,
-      displayUrl: item.image,
-      previewUrl: item.image,
-      aspect: item.aspect || 'wide',
-      location: item.location || '',
-      camera: item.camera || '',
-      date: item.date || '',
-      featured: !!item.featured,
-      likes: Number(item.likes) || 0,
-      views: Number(item.views) || 0,
-      commentCount: Number(item.commentCount) || 0,
-      description: item.description || '',
-      alt: item.title,
-    }))
-    setAllPhotos(mapped)
-    setLoading(false)
-  }, [galleryData])
+    let active = true
+    const load = async () => {
+      setLoading(true)
+      setError(null)
+      try {
+        const mapped = await getDynamicPhotos()
+        if (active) {
+          setAllPhotos(mapped)
+        }
+      } catch (err: any) {
+        console.error('Failed to load infinite photos:', err)
+        if (active) {
+          setError(err.message || 'Failed to fetch photos from Cloudinary.')
+        }
+      } finally {
+        if (active) setLoading(false)
+      }
+    }
+
+    load()
+    window.addEventListener('gallery_updated', load)
+    return () => {
+      active = false
+      window.removeEventListener('gallery_updated', load)
+    }
+  }, [])
 
   // 2. Perform Filtering & Pagination when dataset or criteria changes
   const applyFiltersAndPaginate = useCallback(
@@ -117,5 +122,5 @@ export function useInfinitePhotos(
     }
   }
 
-  return { photos, loading, loadingMore, hasMore, loadMore, refresh: () => applyFiltersAndPaginate(1) }
+  return { photos, loading, loadingMore, hasMore, loadMore, error, refresh: () => applyFiltersAndPaginate(1) }
 }

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { subscribePhotos } from '../utils/firebase'
+import { subscribePhotos } from '../utils/localDB'
 import { SeoHead } from '../components/seo/SeoHead'
 import { Lightbox } from '../components/gallery/Lightbox'
 import type { Photo } from '../types/photo'

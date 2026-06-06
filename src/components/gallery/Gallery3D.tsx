@@ -61,7 +61,8 @@ export function Gallery3D({ photos, onSelectPhoto }: Gallery3DProps) {
 
   return (
     <div
-      className="relative w-full h-[550px] flex items-center justify-center overflow-hidden bg-gradient-to-b from-transparent via-gold/5 to-transparent select-none cursor-grab active:cursor-grabbing"
+      tabIndex={0}
+      className="relative w-full h-[550px] flex items-center justify-center overflow-hidden bg-gradient-to-b from-transparent via-gold/5 to-transparent select-none cursor-grab active:cursor-grabbing focus:outline-none focus-visible:ring-1 focus-visible:ring-gold/30"
       onMouseDown={(e) => handleStart(e.clientX)}
       onMouseMove={(e) => handleMove(e.clientX)}
       onMouseUp={handleEnd}
@@ -69,6 +70,15 @@ export function Gallery3D({ photos, onSelectPhoto }: Gallery3DProps) {
       onTouchStart={(e) => handleStart(e.touches[0].clientX)}
       onTouchMove={(e) => handleMove(e.touches[0].clientX)}
       onTouchEnd={handleEnd}
+      onKeyDown={(e) => {
+        if (e.key === 'ArrowLeft') {
+          e.preventDefault()
+          setRotationY((r) => r + 15)
+        } else if (e.key === 'ArrowRight') {
+          e.preventDefault()
+          setRotationY((r) => r - 15)
+        }
+      }}
       style={{
         perspective: '1200px',
       }}
@@ -87,8 +97,17 @@ export function Gallery3D({ photos, onSelectPhoto }: Gallery3DProps) {
           return (
             <div
               key={photo._id}
-              className="absolute inset-0 border border-white/10 p-2 bg-charcoal-light/40 backdrop-blur-md rounded-sm overflow-hidden shadow-2xl transition-all duration-300 hover:border-gold/60 group cursor-pointer"
+              role="button"
+              tabIndex={0}
+              aria-label={`Examine ${photo.title}`}
+              className="absolute inset-0 border border-white/10 p-2 bg-charcoal-light/40 backdrop-blur-md rounded-sm overflow-hidden shadow-2xl transition-all duration-300 hover:border-gold/60 focus:outline-none focus-visible:ring-2 focus-visible:ring-gold focus:border-gold/60 group cursor-pointer"
               onClick={() => onSelectPhoto(photo)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault()
+                  onSelectPhoto(photo)
+                }
+              }}
               style={{
                 transform: `rotateY(${angle}deg) translateZ(${radius}px)`,
                 backfaceVisibility: 'hidden',

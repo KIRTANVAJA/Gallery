@@ -10,7 +10,7 @@ function localCmsPlugin() {
     name: 'local-cms-plugin',
     configureServer(server: any) {
       server.middlewares.use((req: any, res: any, next: any) => {
-        if (req.url && req.url.startsWith('/api/local-')) {
+        if (req.url && (req.url.startsWith('/api/local-') || req.url === '/api/local-gallery')) {
           res.setHeader('Content-Type', 'application/json')
           
           let body = ''
@@ -21,6 +21,35 @@ function localCmsPlugin() {
           req.on('end', () => {
             try {
               const data = body ? JSON.parse(body) : {}
+              const jsonPath = path.resolve(__dirname, 'src/data/gallery.json')
+              const publicImagesDir = path.resolve(__dirname, 'public/images')
+              
+              // Ensure images directory exists
+              if (!fs.existsSync(publicImagesDir)) {
+                fs.mkdirSync(publicImagesDir, { recursive: true })
+              }
+
+              // GET /api/local-gallery
+              if (req.url === '/api/local-gallery' && req.method === 'GET') {
+                if (fs.existsSync(jsonPath)) {
+                  res.end(fs.readFileSync(jsonPath, 'utf-8'))
+                } else {
+                  res.end('[]')
+                }
+                return
+              }
+
+              // POST /api/local-gallery
+              if (req.url === '/api/local-gallery' && req.method === 'POST') {
+                if (!Array.isArray(data)) {
+                  res.statusCode = 400
+                  res.end(JSON.stringify({ error: 'Payload must be a JSON array of photos' }))
+                  return
+                }
+                fs.writeFileSync(jsonPath, JSON.stringify(data, null, 2))
+                res.end(JSON.stringify({ success: true }))
+                return
+              }
               
               if (req.url === '/api/local-upload') {
                 const { title, category, filename, fileData, aspect, location, camera, date, description } = data
@@ -34,18 +63,13 @@ function localCmsPlugin() {
                 const base64Data = fileData.replace(/^data:image\/\w+;base64,/, '')
                 const buffer = Buffer.from(base64Data, 'base64')
                 
-                // Ensure directories exist
-                const assetsDir = path.resolve(__dirname, 'src/assets/photos')
-                const publicDir = path.resolve(__dirname, 'public/assets/photos')
-                if (!fs.existsSync(assetsDir)) fs.mkdirSync(assetsDir, { recursive: true })
-                if (!fs.existsSync(publicDir)) fs.mkdirSync(publicDir, { recursive: true })
+                // Clean file name
+                const safeFileName = path.basename(filename).replace(/\s+/g, '_')
                 
-                // Write file to both folders
-                fs.writeFileSync(path.join(assetsDir, filename), buffer)
-                fs.writeFileSync(path.join(publicDir, filename), buffer)
+                // Write file to public/images/
+                fs.writeFileSync(path.join(publicImagesDir, safeFileName), buffer)
                 
                 // Load and update gallery.json
-                const jsonPath = path.resolve(__dirname, 'src/data/gallery.json')
                 let galleryList = []
                 if (fs.existsSync(jsonPath)) {
                   galleryList = JSON.parse(fs.readFileSync(jsonPath, 'utf-8'))
@@ -57,9 +81,9 @@ function localCmsPlugin() {
                 
                 const newEntry = {
                   id: newId,
-                  title: title || filename.split('.')[0],
+                  title: title || safeFileName.split('.')[0],
                   category: category || 'Cinematic',
-                  image: `/assets/photos/${filename}`,
+                  image: `/images/${safeFileName}`,
                   aspect: aspect || 'wide',
                   location: location || '',
                   camera: camera || '',
@@ -80,7 +104,6 @@ function localCmsPlugin() {
               
               if (req.url === '/api/local-update') {
                 const { id, fields } = data
-                const jsonPath = path.resolve(__dirname, 'src/data/gallery.json')
                 if (!fs.existsSync(jsonPath)) {
                   res.statusCode = 404
                   res.end(JSON.stringify({ error: 'gallery.json not found' }))
@@ -102,7 +125,6 @@ function localCmsPlugin() {
               
               if (req.url === '/api/local-delete') {
                 const { id } = data
-                const jsonPath = path.resolve(__dirname, 'src/data/gallery.json')
                 if (!fs.existsSync(jsonPath)) {
                   res.statusCode = 404
                   res.end(JSON.stringify({ error: 'gallery.json not found' }))
@@ -113,11 +135,10 @@ function localCmsPlugin() {
                 const item = galleryList.find((i: any) => String(i.id) === String(id))
                 if (item && item.image) {
                   const filename = path.basename(item.image)
-                  const assetsFile = path.resolve(__dirname, 'src/assets/photos', filename)
-                  const publicFile = path.resolve(__dirname, 'public/assets/photos', filename)
-                  
-                  if (fs.existsSync(assetsFile)) fs.unlinkSync(assetsFile)
-                  if (fs.existsSync(publicFile)) fs.unlinkSync(publicFile)
+                  const imageFile = path.resolve(__dirname, 'public/images', filename)
+                  if (fs.existsSync(imageFile)) {
+                    fs.unlinkSync(imageFile)
+                  }
                 }
                 
                 galleryList = galleryList.filter((i: any) => String(i.id) !== String(id))
@@ -128,7 +149,6 @@ function localCmsPlugin() {
               
               if (req.url === '/api/local-reorder') {
                 const { reorderedList } = data
-                const jsonPath = path.resolve(__dirname, 'src/data/gallery.json')
                 if (!fs.existsSync(jsonPath)) {
                   res.statusCode = 404
                   res.end(JSON.stringify({ error: 'gallery.json not found' }))
@@ -196,4 +216,13 @@ export default defineConfig({
       },
     }),
   ],
+  server: {
+    proxy: {
+      '/api': {
+        target: 'http://localhost:5001',
+        changeOrigin: true,
+        secure: false,
+      }
+    }
+  }
 })

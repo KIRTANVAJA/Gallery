@@ -1,6 +1,124 @@
-import { galleryImages } from '../data/gallery'
 import { defaultSettings, type SiteSettings } from '../data/settings'
 import type { Photo, PhotoCategory } from '../types/photo'
+
+import seededPhotos from '../data/gallery.json'
+
+// --- INDEXEDDB CONFIG & PERSISTENCE HELPERS ---
+const DB_NAME = 'cis_portfolio_db';
+const STORE_NAME = 'portfolio_store';
+
+function getIndexedDBData(key: string): Promise<any> {
+  return new Promise((resolve) => {
+    try {
+      const request = indexedDB.open(DB_NAME, 1);
+      request.onupgradeneeded = (e: any) => {
+        const db = e.target.result;
+        if (!db.objectStoreNames.contains(STORE_NAME)) {
+          db.createObjectStore(STORE_NAME);
+        }
+      };
+      request.onsuccess = (e: any) => {
+        const db = e.target.result;
+        const transaction = db.transaction(STORE_NAME, 'readonly');
+        const store = transaction.objectStore(STORE_NAME);
+        const getReq = store.get(key);
+        getReq.onsuccess = () => {
+          resolve(getReq.result);
+        };
+        getReq.onerror = () => {
+          resolve(null);
+        };
+      };
+      request.onerror = () => {
+        resolve(null);
+      };
+    } catch {
+      resolve(null);
+    }
+  });
+}
+
+function setIndexedDBData(key: string, value: any): Promise<boolean> {
+  return new Promise((resolve) => {
+    try {
+      const request = indexedDB.open(DB_NAME, 1);
+      request.onupgradeneeded = (e: any) => {
+        const db = e.target.result;
+        if (!db.objectStoreNames.contains(STORE_NAME)) {
+          db.createObjectStore(STORE_NAME);
+        }
+      };
+      request.onsuccess = (e: any) => {
+        const db = e.target.result;
+        const transaction = db.transaction(STORE_NAME, 'readwrite');
+        const store = transaction.objectStore(STORE_NAME);
+        const putReq = store.put(value, key);
+        putReq.onsuccess = () => {
+          resolve(true);
+        };
+        putReq.onerror = () => {
+          resolve(false);
+        };
+      };
+      request.onerror = () => {
+        resolve(false);
+      };
+    } catch {
+      resolve(false);
+    }
+  });
+}
+
+export async function initPersistentStorage(): Promise<void> {
+
+  // Load photos from IndexedDB
+  const cachedPhotos = await getIndexedDBData('gallery_photos');
+  if (cachedPhotos && Array.isArray(cachedPhotos) && cachedPhotos.length > 0) {
+    localStorage.setItem('gallery_photos', JSON.stringify(cachedPhotos));
+  } else {
+    // If empty in IndexedDB, see if we have it in localStorage
+    const localPhotosStr = localStorage.getItem('gallery_photos');
+    if (localPhotosStr) {
+      try {
+        const parsed = JSON.parse(localPhotosStr);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          await setIndexedDBData('gallery_photos', parsed);
+        }
+      } catch {}
+    }
+  }
+
+  // Load settings from IndexedDB
+  const cachedSettings = await getIndexedDBData('gallery_settings');
+  if (cachedSettings) {
+    localStorage.setItem('gallery_settings', JSON.stringify(cachedSettings));
+  } else {
+    const localSettingsStr = localStorage.getItem('gallery_settings');
+    if (localSettingsStr) {
+      try {
+        const parsed = JSON.parse(localSettingsStr);
+        await setIndexedDBData('gallery_settings', parsed);
+      } catch {}
+    }
+  }
+
+  // Load inquiries from IndexedDB
+  const cachedInquiries = await getIndexedDBData('gallery_inquiries');
+  if (cachedInquiries && Array.isArray(cachedInquiries)) {
+    localStorage.setItem('gallery_inquiries', JSON.stringify(cachedInquiries));
+  } else {
+    const localInquiriesStr = localStorage.getItem('gallery_inquiries');
+    if (localInquiriesStr) {
+      try {
+        const parsed = JSON.parse(localInquiriesStr);
+        await setIndexedDBData('gallery_inquiries', parsed);
+      } catch {}
+    }
+  }
+
+  // Dispatch event to update hooks with loaded values
+  window.dispatchEvent(new Event('gallery_updated'));
+}
 
 export interface LocalComment {
   id: string
@@ -26,255 +144,165 @@ export interface LocalInquiry {
   createdAt: string
 }
 
-export interface CloudinaryConfig {
-  cloudName: string
-  uploadPreset: string
-  apiKey: string
-  apiSecret: string
-}
-
-// --- CLOUDINARY CONFIG & HELPERS ---
-export function getCloudinaryConfig(): CloudinaryConfig | null {
-  const local = localStorage.getItem('cloudinary_config')
-  if (local) {
+export function getPhotoLikes(photoId: string): number {
+  const dictStr = localStorage.getItem('gallery_likes_dict')
+  if (dictStr) {
     try {
-      const parsed = JSON.parse(local)
-      if (parsed.cloudName && parsed.uploadPreset) {
-        return parsed
+      const dict = JSON.parse(dictStr)
+      if (dict[photoId] !== undefined) {
+        return Number(dict[photoId]) || 0
       }
-    } catch {
-      return null
-    }
+    } catch {}
   }
-  return null
+  // Fallback: see if it exists in localPhotos
+  const photos = getLocalPhotosRaw()
+  const photo = photos.find((p) => p.id === photoId)
+  return photo ? (photo.likes || 0) : 0
 }
 
-export function saveCloudinaryConfig(config: CloudinaryConfig) {
-  localStorage.setItem('cloudinary_config', JSON.stringify(config))
-}
-
-export function serializeMetadata(photo: {
-  title: string
-  category: string
-  camera: string
-  location: string
-  date: string
-  aspect: 'tall' | 'wide' | 'square'
-  featured: boolean
-  description?: string
-}): string {
-  const params = new URLSearchParams()
-  params.set('t', photo.title)
-  params.set('c', photo.category)
-  if (photo.camera) params.set('cam', photo.camera)
-  if (photo.location) params.set('l', photo.location)
-  if (photo.date) params.set('d', photo.date)
-  params.set('a', photo.aspect)
-  params.set('f', photo.featured ? '1' : '0')
-  if (photo.description) params.set('dsc', photo.description)
-
-  const queryString = params.toString()
-  // URL-safe base64 encoding (replace + with -, / with _, and strip padding =)
-  const base64 = btoa(unescape(encodeURIComponent(queryString)))
-    .replace(/\+/g, '-')
-    .replace(/\//g, '_')
-    .replace(/=+$/, '')
-  return base64
-}
-
-export function deserializeMetadata(base64: string, publicId: string, cloudName: string): Photo | null {
+export function incrementPhotoLike(photoId: string): number {
+  const dictStr = localStorage.getItem('gallery_likes_dict') || '{}'
+  let dict: Record<string, number> = {}
   try {
-    let str = base64.replace(/-/g, '+').replace(/_/g, '/')
-    while (str.length % 4) {
-      str += '='
-    }
-    const decoded = decodeURIComponent(escape(atob(str)))
-    const params = new URLSearchParams(decoded)
-
-    const title = params.get('t') || 'Untitled'
-    const category = (params.get('c') || 'Cinematic') as PhotoCategory
-    const camera = params.get('cam') || ''
-    const location = params.get('l') || ''
-    const date = params.get('d') || ''
-    const aspect = (params.get('a') || 'wide') as 'tall' | 'wide' | 'square'
-    const featured = params.get('f') === '1'
-    const description = params.get('dsc') || ''
-
-    // Optimize image transformations using Cloudinary CDN
-    const optimizedSrc = `https://res.cloudinary.com/${cloudName}/image/upload/f_auto,q_auto,w_1600/${publicId}`
-    const previewSrc = `https://res.cloudinary.com/${cloudName}/image/upload/f_auto,q_auto,w_600/${publicId}`
-
-    return {
-      id: publicId,
-      slug: publicId.replace(/\//g, '-'),
-      title,
-      category,
-      camera,
-      location,
-      date,
-      aspect,
-      featured,
-      src: optimizedSrc,
-      displayUrl: optimizedSrc,
-      previewUrl: previewSrc,
-      alt: title,
-      description,
-      likes: 0,
-      views: 0
-    }
-  } catch (e) {
-    console.error('[localDB] Failed to deserialize metadata for publicId:', publicId, e)
-    return null
+    dict = JSON.parse(dictStr)
+  } catch {}
+  
+  let current = dict[photoId]
+  if (current === undefined) {
+    current = getPhotoLikes(photoId)
   }
+  const newValue = current + 1
+  dict[photoId] = newValue
+  localStorage.setItem('gallery_likes_dict', JSON.stringify(dict))
+
+  // Sync to localPhotos
+  const photos = getLocalPhotosRaw()
+  const idx = photos.findIndex((p) => p.id === photoId)
+  if (idx !== -1) {
+    photos[idx].likes = newValue
+    saveLocalPhotos(photos)
+  }
+  return newValue
 }
 
-// Generate secure SHA-1 signature on client browser using native SubtleCrypto Web API
-export async function generateCloudinarySignature(params: Record<string, string>, apiSecret: string): Promise<string> {
-  const sortedKeys = Object.keys(params).sort()
-  const signString = sortedKeys
-    .map((key) => `${key}=${params[key]}`)
-    .join('&') + apiSecret
+export function getPhotoViews(photoId: string): number {
+  const dictStr = localStorage.getItem('gallery_views_dict')
+  if (dictStr) {
+    try {
+      const dict = JSON.parse(dictStr)
+      if (dict[photoId] !== undefined) {
+        return Number(dict[photoId]) || 0
+      }
+    } catch {}
+  }
+  // Fallback
+  const photos = getLocalPhotosRaw()
+  const photo = photos.find((p) => p.id === photoId)
+  return photo ? (photo.views || 0) : 0
+}
 
-  const buffer = new TextEncoder().encode(signString)
-  const hash = await crypto.subtle.digest('SHA-1', buffer)
-  return Array.from(new Uint8Array(hash))
-    .map((b) => b.toString(16).padStart(2, '0'))
-    .join('')
+export function incrementPhotoView(photoId: string): number {
+  const dictStr = localStorage.getItem('gallery_views_dict') || '{}'
+  let dict: Record<string, number> = {}
+  try {
+    dict = JSON.parse(dictStr)
+  } catch {}
+  
+  let current = dict[photoId]
+  if (current === undefined) {
+    current = getPhotoViews(photoId)
+  }
+  const newValue = current + 1
+  dict[photoId] = newValue
+  localStorage.setItem('gallery_views_dict', JSON.stringify(dict))
+
+  // Sync to localPhotos
+  const photos = getLocalPhotosRaw()
+  const idx = photos.findIndex((p) => p.id === photoId)
+  if (idx !== -1) {
+    photos[idx].views = newValue
+    saveLocalPhotos(photos)
+  }
+  return newValue
 }
 
 // --- PHOTOS MANAGER ---
-export function getLocalPhotos(): Photo[] {
+function getLocalPhotosRaw(): Photo[] {
   const local = localStorage.getItem('gallery_photos')
   if (local) {
     try {
       const parsed = JSON.parse(local)
-      return parsed.map((img: any) => ({
-        id: img.id || String(img._id),
-        slug: img.slug || img.id || String(img._id),
-        title: img.title || 'Untitled',
-        category: (img.category || 'Cinematic') as PhotoCategory,
-        location: img.location || '',
-        camera: img.camera || '',
-        lens: img.lens || '',
-        featured: !!img.featured,
-        likes: Number(img.likes) || 0,
-        views: Number(img.views) || 0,
-        aspect: img.aspect || 'wide',
-        src: img.src || img.displayUrl || '',
-        displayUrl: img.displayUrl || img.src || '',
-        alt: img.alt || img.title || '',
-        date: img.date || '',
-        description: img.description || '',
-        tags: img.tags || [],
-        aiTags: img.aiTags || [],
-        mood: img.mood || '',
-        dominantColors: img.dominantColors || [],
-      }))
-    } catch (e) {
-      console.error('[localDB] Error parsing gallery_photos, reverting to default:', e)
-    }
+      const scrubbed = Array.isArray(parsed)
+        ? parsed.filter((img: any) => {
+            const src = img.src || img.image || img.displayUrl || ''
+            return !src.startsWith('data:image/')
+          })
+        : []
+      
+      if (scrubbed.length > 0) {
+        return scrubbed.map((img: any) => ({
+          id: String(img.id),
+          slug: img.slug || String(img.id),
+          title: img.title || 'Untitled',
+          category: (img.category || 'Cinematic') as PhotoCategory,
+          location: img.location || '',
+          camera: img.camera || '',
+          lens: img.lens || '',
+          featured: !!img.featured,
+          likes: Number(img.likes) || 0,
+          views: Number(img.views) || 0,
+          commentCount: Number(img.commentCount) || 0,
+          aspect: img.aspect || 'wide',
+          src: img.src || img.image || img.displayUrl || '',
+          displayUrl: img.displayUrl || img.image || img.src || '',
+          alt: img.alt || img.title || '',
+          date: img.date || '',
+          description: img.description || '',
+          tags: img.tags || [],
+          aiTags: img.aiTags || [],
+          mood: img.mood || '',
+          dominantColors: img.dominantColors || [],
+        }))
+      }
+    } catch {}
   }
-  // Initialize with seed
-  const seeded = galleryImages.map((img) => ({
-    id: img.id,
-    slug: img.id,
-    title: img.title,
+  return (seededPhotos as any[]).map((img) => ({
+    id: String(img.id),
+    slug: String(img.id),
+    title: img.title || 'Untitled',
     category: img.category as PhotoCategory,
-    location: img.location,
-    camera: img.camera,
+    location: img.location || '',
+    camera: img.camera || '',
     lens: '',
-    featured: false,
-    likes: 0,
-    views: 0,
-    aspect: img.aspect,
-    src: img.src,
-    displayUrl: img.src,
-    alt: img.alt,
-    date: img.date,
+    featured: !!img.featured,
+    likes: Number(img.likes) || 0,
+    views: Number(img.views) || 0,
+    commentCount: Number(img.commentCount) || 0,
+    aspect: (img.aspect || 'wide') as 'tall' | 'wide' | 'square',
+    src: img.image || img.src || '',
+    displayUrl: img.image || img.src || '',
+    alt: img.alt || img.title || '',
+    date: img.date || '',
+    description: img.description || '',
   }))
-  localStorage.setItem('gallery_photos', JSON.stringify(seeded))
-  return seeded
 }
 
-export async function getDynamicPhotos(): Promise<Photo[]> {
-  const config = getCloudinaryConfig()
-  if (!config) {
-    return getLocalPhotos()
-  }
-
-  try {
-    const listUrl = `https://res.cloudinary.com/${config.cloudName}/image/list/cis_gallery.json`
-    const res = await fetch(listUrl + '?t=' + Date.now())
-    if (!res.ok) {
-      throw new Error(`Cloudinary list error: ${res.status}`)
-    }
-    const data = await res.json()
-    if (data && Array.isArray(data.resources)) {
-      const parsedPhotos: Photo[] = []
-      
-      const sortedResources = data.resources.sort((a: any, b: any) => {
-        return new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
-      })
-
-      for (const resource of sortedResources) {
-        const publicId = resource.public_id
-        const slashIdx = publicId.indexOf('/')
-        if (slashIdx !== -1) {
-          const base64 = publicId.substring(slashIdx + 1)
-          const photo = deserializeMetadata(base64, publicId, config.cloudName)
-          if (photo) {
-            const stored = getLocalPhotos()
-            const match = stored.find((p) => p.id === publicId)
-            if (match) {
-              photo.likes = match.likes || 0
-              photo.views = match.views || 0
-              photo.commentCount = match.commentCount || 0
-            }
-            parsedPhotos.push(photo)
-          }
-        }
-      }
-
-      const local = getLocalPhotos()
-      const merged = parsedPhotos.map((p) => {
-        const match = local.find((l) => l.id === p.id)
-        return match ? { ...p, likes: match.likes, views: match.views } : p
-      })
-      saveLocalPhotos(merged)
-
-      return parsedPhotos
-    }
-  } catch (err) {
-    console.warn('[Cloudinary Fetch] Reverting to cached local storage photos:', err)
-  }
-
-  return getLocalPhotos()
+export function getLocalPhotos(): Photo[] {
+  const photos = getLocalPhotosRaw()
+  return photos.map(photo => ({
+    ...photo,
+    likes: getPhotoLikes(photo.id),
+    views: getPhotoViews(photo.id)
+  }))
 }
 
 export function saveLocalPhotos(photos: Photo[]) {
-  localStorage.setItem('gallery_photos', JSON.stringify(photos))
-}
-
-export function incrementPhotoLike(photoId: string): number {
-  const photos = getLocalPhotos()
-  const idx = photos.findIndex((p) => p.id === photoId)
-  if (idx !== -1) {
-    photos[idx].likes = (photos[idx].likes || 0) + 1
-    saveLocalPhotos(photos)
-    return photos[idx].likes
-  }
-  return 0
-}
-
-export function incrementPhotoView(photoId: string): number {
-  const photos = getLocalPhotos()
-  const idx = photos.findIndex((p) => p.id === photoId)
-  if (idx !== -1) {
-    photos[idx].views = (photos[idx].views || 0) + 1
-    saveLocalPhotos(photos)
-    return photos[idx].views
-  }
-  return 0
+  const scrubbed = photos.filter((p) => {
+    const src = p.src || p.displayUrl || ''
+    return !src.startsWith('data:image/')
+  })
+  localStorage.setItem('gallery_photos', JSON.stringify(scrubbed))
+  setIndexedDBData('gallery_photos', scrubbed)
 }
 
 // --- SETTINGS MANAGER ---
@@ -293,6 +321,7 @@ export function getLocalSettings(): SiteSettings {
 
 export function saveLocalSettings(settings: SiteSettings) {
   localStorage.setItem('gallery_settings', JSON.stringify(settings))
+  setIndexedDBData('gallery_settings', settings)
 }
 
 // --- COMMENTS MANAGER ---
@@ -382,6 +411,7 @@ export function getLocalInquiries(): LocalInquiry[] {
 
 export function saveLocalInquiries(inquiries: LocalInquiry[]) {
   localStorage.setItem('gallery_inquiries', JSON.stringify(inquiries))
+  setIndexedDBData('gallery_inquiries', inquiries)
 }
 
 export function addLocalInquiry(name: string, email: string, message: string, type: string): LocalInquiry {
@@ -398,4 +428,121 @@ export function addLocalInquiry(name: string, email: string, message: string, ty
   inquiries.unshift(newInq)
   saveLocalInquiries(inquiries)
   return newInq
+}
+
+// --- LOCAL REALTIME FACADE SUBSCRIPTIONS (CONSOLIDATED FROM FIREBASE MOCK LAYER) ---
+
+export function subscribePhotos(callback: (photos: Photo[]) => void) {
+  const mapList = (): Photo[] => {
+    return getLocalPhotos()
+  }
+
+  callback(mapList())
+
+  const handler = () => {
+    callback(mapList())
+  }
+
+  window.addEventListener('gallery_updated', handler)
+  return () => window.removeEventListener('gallery_updated', handler)
+}
+
+export function subscribeSettings(callback: (settings: SiteSettings) => void) {
+  callback(getLocalSettings())
+
+  const handler = () => {
+    callback(getLocalSettings())
+  }
+
+  window.addEventListener('gallery_updated', handler)
+  return () => window.removeEventListener('gallery_updated', handler)
+}
+
+export function subscribeInquiries(callback: (inquiries: LocalInquiry[]) => void) {
+  callback(getLocalInquiries())
+
+  const handler = () => {
+    callback(getLocalInquiries())
+  }
+
+  window.addEventListener('gallery_updated', handler)
+  return () => window.removeEventListener('gallery_updated', handler)
+}
+
+// --- DATABASE OPERATIONS (MOCK/FACADE CONSOLIDATED FROM FIREBASE MOCK LAYER) ---
+
+export async function dbAddPhoto(photo: Omit<Photo, 'likes' | 'views'>) {
+  const current = getLocalPhotosRaw()
+  const newPhoto: Photo = { 
+    ...photo, 
+    likes: getPhotoLikes(photo.id), 
+    views: getPhotoViews(photo.id) 
+  }
+  saveLocalPhotos([newPhoto, ...current])
+  window.dispatchEvent(new Event('gallery_updated'))
+}
+
+export async function dbUpdatePhoto(id: string, fields: Partial<Photo>) {
+  const current = getLocalPhotosRaw()
+  const updated = current.map((p) => (p.id === id ? { ...p, ...fields } : p))
+  saveLocalPhotos(updated)
+  window.dispatchEvent(new Event('gallery_updated'))
+}
+
+export async function dbDeletePhoto(id: string) {
+  const current = getLocalPhotosRaw()
+  const updated = current.filter((p) => p.id !== id)
+  saveLocalPhotos(updated)
+  window.dispatchEvent(new Event('gallery_updated'))
+}
+
+export async function dbSaveSettings(settings: SiteSettings) {
+  saveLocalSettings(settings)
+  window.dispatchEvent(new Event('gallery_updated'))
+}
+
+export async function dbAddInquiry(name: string, email: string, message: string, type: string) {
+  addLocalInquiry(name, email, message, type)
+  window.dispatchEvent(new Event('gallery_updated'))
+}
+
+export async function dbDeleteInquiry(id: string) {
+  const current = getLocalInquiries()
+  const updated = current.filter((inq) => inq._id !== id)
+  localStorage.setItem('gallery_inquiries', JSON.stringify(updated))
+  window.dispatchEvent(new Event('gallery_updated'))
+}
+
+export async function dbIncrementPhotoLike(_id: string) {}
+export async function dbIncrementPhotoView(_id: string) {}
+export async function seedFirebaseIfEmpty() {}
+
+export async function getDynamicPhotos(): Promise<Photo[]> {
+  try {
+    const res = await fetch('/api/local-gallery')
+    if (res.ok) {
+      const livePhotos = await res.json()
+      if (Array.isArray(livePhotos)) {
+        return livePhotos.map((p) => ({
+          ...p,
+          id: String(p.id),
+          slug: p.slug || String(p.id),
+          likes: getPhotoLikes(String(p.id)),
+          views: getPhotoViews(String(p.id)),
+          commentCount: p.commentCount || 0
+        }))
+      }
+    }
+  } catch (err) {
+    // Fail silently in production, fallback to statically imported JSON
+  }
+
+  return (seededPhotos as any[]).map((p) => ({
+    ...p,
+    id: String(p.id),
+    slug: p.slug || String(p.id),
+    likes: getPhotoLikes(String(p.id)),
+    views: getPhotoViews(String(p.id)),
+    commentCount: p.commentCount || 0
+  }))
 }

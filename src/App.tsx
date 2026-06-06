@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { BrowserRouter, Route, Routes } from 'react-router-dom'
 import { ProtectedRoute } from './components/auth/ProtectedRoute'
-import { CustomCursor } from './components/effects/CustomCursor'
+
 import { GrainOverlay } from './components/effects/GrainOverlay'
 import { LoadingScreen } from './components/effects/LoadingScreen'
 import { ParticleField } from './components/effects/ParticleField'
@@ -14,8 +14,8 @@ import { useAmbientMusic } from './hooks/useAmbientMusic'
 import { useImageProtection } from './hooks/useImageProtection'
 import { useTheme } from './hooks/useTheme'
 import { useAdminAccess } from './context/AdminAccessContext'
-import { galleryImages } from './data/gallery'
-import { defaultSettings } from './data/settings'
+
+import { initPersistentStorage } from './utils/localDB'
 
 function App() {
   const [loading, setLoading] = useState(true)
@@ -25,22 +25,21 @@ function App() {
   useImageProtection()
 
   useEffect(() => {
-    // Seed LocalStorage database on startup if not present
-    if (!localStorage.getItem('gallery_photos')) {
-      localStorage.setItem('gallery_photos', JSON.stringify(galleryImages))
-    }
-    if (!localStorage.getItem('gallery_settings')) {
-      localStorage.setItem('gallery_settings', JSON.stringify(defaultSettings))
-    }
-
-    const timer = setTimeout(() => setLoading(false), 2800)
-    return () => clearTimeout(timer)
+    // Load and restore persistent data from IndexedDB into localStorage on load
+    initPersistentStorage()
+      .then(() => {
+        setTimeout(() => setLoading(false), 2000)
+      })
+      .catch((err) => {
+        console.error('Storage initialization failed:', err)
+        setLoading(false)
+      })
   }, [])
 
   return (
     <BrowserRouter>
       <LoadingScreen visible={loading} />
-      <CustomCursor />
+
       <GrainOverlay />
       <ParticleField />
 

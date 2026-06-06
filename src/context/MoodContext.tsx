@@ -30,7 +30,8 @@ export function MoodProvider({ children }: { children: React.ReactNode }) {
   const audioCtxRef = useRef<AudioContext | null>(null)
   const masterGainRef = useRef<GainNode | null>(null)
   const synthNodesRef = useRef<any[]>([])
-
+  const intervalIdsRef = useRef<number[]>([])
+  
   const setMood = (newMood: MoodType) => {
     setMoodState(newMood)
     // Update body class for CSS filters/colors
@@ -60,6 +61,9 @@ export function MoodProvider({ children }: { children: React.ReactNode }) {
 
   // Clean up all running synths
   const stopSynthesis = () => {
+    intervalIdsRef.current.forEach((id) => clearInterval(id))
+    intervalIdsRef.current = []
+
     synthNodesRef.current.forEach((node) => {
       try {
         node.stop()
@@ -128,7 +132,7 @@ export function MoodProvider({ children }: { children: React.ReactNode }) {
         osc.start()
         
         // Loop the swell
-        const interval = setInterval(() => {
+        const interval = window.setInterval(() => {
           if (!soundPlaying || mood !== 'rainy-nights') {
             clearInterval(interval)
             return
@@ -138,6 +142,7 @@ export function MoodProvider({ children }: { children: React.ReactNode }) {
           g.gain.linearRampToValueAtTime(0.04, ctx.currentTime + 3 + idx)
           g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 8 + idx)
         }, 12000)
+        intervalIdsRef.current.push(interval)
 
         synthNodesRef.current.push(osc)
       })
@@ -165,7 +170,7 @@ export function MoodProvider({ children }: { children: React.ReactNode }) {
         g.connect(dest)
         osc.start()
 
-        const interval = setInterval(() => {
+        const interval = window.setInterval(() => {
           if (!soundPlaying || mood !== 'golden-hour') {
             clearInterval(interval)
             return
@@ -175,6 +180,7 @@ export function MoodProvider({ children }: { children: React.ReactNode }) {
           g.gain.linearRampToValueAtTime(0.05, ctx.currentTime + 4 + idx)
           g.gain.linearRampToValueAtTime(0.01, ctx.currentTime + 10 + idx)
         }, 14000)
+        intervalIdsRef.current.push(interval)
 
         synthNodesRef.current.push(osc)
       })
@@ -221,7 +227,7 @@ export function MoodProvider({ children }: { children: React.ReactNode }) {
         g.connect(dest)
         osc.start()
 
-        const interval = setInterval(() => {
+        const interval = window.setInterval(() => {
           if (!soundPlaying || mood !== 'nostalgic') {
             clearInterval(interval)
             return
@@ -230,6 +236,7 @@ export function MoodProvider({ children }: { children: React.ReactNode }) {
           g.gain.linearRampToValueAtTime(0.03, ctx.currentTime + 1)
           g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 5 + idx)
         }, 8000)
+        intervalIdsRef.current.push(interval)
 
         synthNodesRef.current.push(osc)
       })
@@ -252,7 +259,7 @@ export function MoodProvider({ children }: { children: React.ReactNode }) {
         g.connect(dest)
         osc.start()
 
-        const interval = setInterval(() => {
+        const interval = window.setInterval(() => {
           if (!soundPlaying || !['cinematic', 'lonely', 'dreamy', 'peaceful', 'monochrome'].includes(mood)) {
             clearInterval(interval)
             return
@@ -262,6 +269,7 @@ export function MoodProvider({ children }: { children: React.ReactNode }) {
           g.gain.linearRampToValueAtTime(0.04, ctx.currentTime + 4)
           g.gain.linearRampToValueAtTime(0.02, ctx.currentTime + 8 + idx)
         }, 15000)
+        intervalIdsRef.current.push(interval)
 
         synthNodesRef.current.push(osc)
       })
